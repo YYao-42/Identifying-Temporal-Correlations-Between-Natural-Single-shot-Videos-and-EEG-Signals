@@ -67,41 +67,36 @@ def cano_corr(X, Y, K_regu=7):
     '''
     _, D = X.shape
     _, L = Y.shape
+    # compute covariance matrices
     covXY = np.cov(X, Y, rowvar=False)
     Rx = covXY[:D,:D]
     Ry = covXY[D:D+L,D:D+L]
     Rxy = covXY[:D,D:D+L]
     Ryx = covXY[D:D+L,:D]
-    # if LA.matrix_rank(Rx) < D:
-    #     invRx = PCAreg_inv(Rx, LA.matrix_rank(Rx))
-    # else:
-    #     invRx = LA.inv(Rx)
-    # if LA.matrix_rank(Ry) < L:
-    #     invRy = PCAreg_inv(Ry, LA.matrix_rank(Ry))
-    # else:
-    #     invRy = LA.inv(Ry)
+    # PCA regularization is recommended (set K_regu<rank(Rx))
+    # such that the small eigenvalues dominated by noise are discarded
     invRx = PCAreg_inv(Rx, K_regu)
     invRy = PCAreg_inv(Ry, K_regu)
     A = invRx@Rxy@invRy@Ryx
     B = invRy@Ryx@invRx@Rxy
     # lam of A and lam of B should be the same
     # can be used as a preliminary check for correctness
-    # can't tell neg or pos, therefore not used
+    # the correlation coefficients are already available by taking sqrt of the eigenvalues: corr_coe = np.sqrt(lam[:K_regu])
+    # or we do the following to obtain transformed X and Y and calculate corr_coe from there
     _, V_A = eig_sorted(A)
     _, V_B = eig_sorted(B)
-    # corr_coe = np.sqrt(lam[:K_regu]) # wrong 
-    # _, V_A = LA.eig(A)
-    # _, V_B = LA.eig(B)
-    X_trans = X@np.real(V_A[:,:K_regu])
-    Y_trans = Y@np.real(V_B[:,:K_regu])
+    V_A = np.real(V_A[:,:K_regu])
+    V_B = np.real(V_B[:,:K_regu])
+    X_trans = X@V_A
+    Y_trans = Y@V_B
     corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(K_regu)]
     corr_coe = np.array([corr_pvalue[k][0] for k in range(K_regu)])
-    # idx = np.argsort(-np.abs(corr_coe))
-    # corr_coe = corr_coe[idx]
-    # null hypothesis that the distributions underlying the samples are uncorrelated and normally distributed.
-    p_value = np.array([corr_pvalue[k][1] for k in range(K_regu)]) 
-    # p_value = p_value[idx]
-    return corr_coe, p_value, V_A[:,:K_regu], V_B[:,:K_regu]
+    # P-value-null hypothesis: the distributions underlying the samples are uncorrelated and normally distributed.
+    p_value = np.array([corr_pvalue[k][1] for k in range(K_regu)])
+    # to match filters v_a and v_b s.t. corr_coe is always positive
+    V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
+    corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
+    return corr_coe, p_value, V_A, V_B
 
 
 def shuffle_block(X, t, fs):
@@ -135,9 +130,9 @@ def permutation_test(X, Y, num_test, t, fs, topK):
 def leave_one_fold_out(EEG, Sti, L_timefilter, K_regu=7, fold=10, fold_idx=1):
     EEG_train, EEG_test, Sti_train, Sti_test = split(EEG, Sti, fold=fold, fold_idx=fold_idx)
     conv_mtx_train = convolution_mtx(L_timefilter, Sti_train)
-    corr_coe_train, _, V_A_train, V_B_train = cano_corr(EEG_train, conv_mtx_train)
+    corr_coe_train, p_value_train, V_A_train, V_B_train = cano_corr(EEG_train, conv_mtx_train)
     conv_mtx_test = convolution_mtx(L_timefilter, Sti_test)
-    EEG_test_trans = EEG_test@np.real(V_A_train)
-    conv_mtx_test_trans = conv_mtx_test@np.real(V_B_train)
+    EEG_test_trans = EEG_test@V_A_train
+    conv_mtx_test_trans = conv_mtx_test@V_B_train
     corr_pvalue = [pearsonr(EEG_test_trans[:,k], conv_mtx_test_trans[:,k]) for k in range(K_regu)]
     return corr_coe_train, corr_pvalue
