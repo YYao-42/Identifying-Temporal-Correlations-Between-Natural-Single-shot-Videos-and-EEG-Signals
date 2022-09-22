@@ -113,7 +113,7 @@ def shuffle_block(X, t, fs):
     return X_shuffled
 
 
-def permutation_test(X, Y, num_test, t, fs, topK):
+def permutation_test(X, Y, num_test, t, fs, topK, V_A=None, V_B=None):
     corr_coe_topK = np.empty((0, topK))
     X = np.expand_dims(X, axis=2)
     Y = np.expand_dims(Y, axis=(1,2))
@@ -122,7 +122,14 @@ def permutation_test(X, Y, num_test, t, fs, topK):
         Y_shuffled = np.squeeze(shuffle_block(Y, t, fs), axis=(1,2))
         L_timefilter = fs
         conv_mtx_shuffled = convolution_mtx(L_timefilter, Y_shuffled)
-        corr_coe, _, _, _ = cano_corr(X_shuffled, conv_mtx_shuffled)
+        if V_A is not None:
+            X_shuffled_trans = X_shuffled@V_A
+            Y_shuffled_trans = conv_mtx_shuffled@V_B
+            K_regu = min(V_A.shape[1], V_B.shape[1])
+            corr_pvalue = [pearsonr(X_shuffled_trans[:,k], Y_shuffled_trans[:,k]) for k in range(K_regu)]
+            corr_coe = np.array([corr_pvalue[k][0] for k in range(K_regu)])
+        else:
+            corr_coe, _, _, _ = cano_corr(X_shuffled, conv_mtx_shuffled)
         corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:topK], axis=0)), axis=0)
     return corr_coe_topK
 
