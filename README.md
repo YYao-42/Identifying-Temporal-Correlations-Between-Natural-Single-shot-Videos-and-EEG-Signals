@@ -2,7 +2,7 @@
 
 This repository stores an implementation of canonical correlation analysis (CCA) in Python. Extensions of CCA will be gradually added in the future.
 
-Running the jupyter notebook to view the descriptions and experiment results. Supporting functions can be found in utils.py.
+Run the jupyter notebook to view the descriptions and experiment results. Supporting functions can be found in utils.py.
 
 **Reference:**
 
