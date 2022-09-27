@@ -34,6 +34,7 @@ def PCAreg_inv(X, rank):
     '''
     PCA Regularized inverse of a symmetric square matrix X
     rank could be a smaller number than rank(X)
+    Alternative: sklearn.covariance.LedoitWolf
     '''
     lam, V = eig_sorted(X)
     lam = lam[:rank]
@@ -101,7 +102,7 @@ def cano_corr(X, Y, K_regu=7):
 
 
 def GCCA(X, n_components, regularization='lwcov'):
-    T, D, N = X.shape
+    _, D, N = X.shape
     # From [X1; X2; ... XN] to [X1 X2 ... XN]
     # each column represents a variable, while the rows contain observations
     X_list = [X[:,:,n] for n in range(N)]
@@ -166,3 +167,17 @@ def leave_one_fold_out(EEG, Sti, L_timefilter, K_regu=7, fold=10, fold_idx=1):
     conv_mtx_test_trans = conv_mtx_test@V_B_train
     corr_pvalue = [pearsonr(EEG_test_trans[:,k], conv_mtx_test_trans[:,k]) for k in range(K_regu)]
     return corr_coe_train, corr_pvalue
+
+
+def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
+    path = head+'/'+datatype+'/'+year+'/'
+    datafiles = os.listdir(path)
+    X = []
+    for datafile in datafiles:
+        EEGdata = scipy.io.loadmat(path+datafile)
+        fs = int(EEGdata['fsref'])
+        data_per_subject = np.concatenate(tuple([EEGdata['Y1'][i][0] for i in range(len(EEGdata[view]))]),axis=1)
+        data_per_subject = np.nan_to_num(data_per_subject, copy=False)
+        X.append(np.transpose(data_per_subject))
+    X = np.stack(tuple(X), axis=2)
+    return X, fs
