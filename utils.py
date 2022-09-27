@@ -2,10 +2,11 @@ import numpy as np
 import random
 import os
 import scipy.io
+from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
 from scipy import signal
-from scipy.linalg import toeplitz
+from scipy.linalg import toeplitz, eig, eigh
 from scipy.stats import zscore, pearsonr
 
 
@@ -97,6 +98,28 @@ def cano_corr(X, Y, K_regu=7):
     V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
     corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
     return corr_coe, p_value, V_A, V_B
+
+
+def GCCA(X, n_components, regularization='lwcov'):
+    T, D, N = X.shape
+    # From [X1; X2; ... XN] to [X1 X2 ... XN]
+    # each column represents a variable, while the rows contain observations
+    X_list = [X[:,:,n] for n in range(N)]
+    X = np.concatenate(tuple(X_list), axis=1)
+    if regularization == 'lwcov':
+        Rxx = LedoitWolf().fit(X).covariance_
+    else:
+        Rxx = np.cov(X, rowvar=False)
+    Dxx = np.zeros_like(Rxx)
+    for n in range(N):
+        Dxx[n*D:(n+1)*D,n*D:(n+1)*D] = Rxx[n*D:(n+1)*D,n*D:(n+1)*D]
+    # Dxx and Rxx are symmetric matrices, so here we can use eigh
+    # Otherwise we should use eig, which is much slower
+    # Generalized eigenvalue decomposition
+    # Dxx @ W = Rxx @ W @ np.diag(lam)
+    # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
+    lam, W = eigh(Dxx, Rxx) # automatically ascend
+    return lam[:n_components], W[:,:n_components]
 
 
 def shuffle_block(X, t, fs):
