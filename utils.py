@@ -34,7 +34,6 @@ def PCAreg_inv(X, rank):
     '''
     PCA Regularized inverse of a symmetric square matrix X
     rank could be a smaller number than rank(X)
-    Alternative: sklearn.covariance.LedoitWolf
     '''
     lam, V = eig_sorted(X)
     lam = lam[:rank]
@@ -60,6 +59,27 @@ def split(EEG, Sti, fold=10, fold_idx=1):
     Sti_train = np.delete(Sti, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
     return EEG_train, EEG_test, Sti_train, Sti_test
 
+
+def corr_component(X, n_components):
+    '''
+    Input:
+    X: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+    '''
+    _, D, N = X.shape
+    Rw = np.zeros([D,D])
+    for n in range(N):
+        Rw += np.cov(np.transpose(X[:,:,n])) # Inside np.cov: observations in the columns
+    Rt = N**2*np.cov(np.transpose(np.average(X, axis=2)))
+    Rb = (Rt - Rw)/(N-1)
+    rank = LA.matrix_rank(Rw)
+    if rank < D:
+        invRw = PCAreg_inv(Rw, rank)
+    else:
+        invRw = LA.inv(Rw)
+    ISC, W = eig_sorted(invRw@Rb)
+    # ISC also equals to np.diag((np.transpose(W)@Rb@W)/(np.transpose(W)@Rw@W))
+    return ISC[:n_components], W[:,:n_components]
+    
 
 def cano_corr(X, Y, K_regu=7):
     '''
@@ -120,7 +140,10 @@ def GCCA(X, n_components, regularization='lwcov'):
     # Dxx @ W = Rxx @ W @ np.diag(lam)
     # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
     lam, W = eigh(Dxx, Rxx) # automatically ascend
-    return lam[:n_components], W[:,:n_components]
+    # lam also equals to np.diag(np.transpose(W)@Dxx@W)
+    lam = lam[:n_components]
+    W = W[:,:n_components]
+    return lam, W
 
 
 def shuffle_block(X, t, fs):
