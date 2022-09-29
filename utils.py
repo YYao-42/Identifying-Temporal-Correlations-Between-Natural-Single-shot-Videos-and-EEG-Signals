@@ -143,7 +143,36 @@ def GCCA(X, n_components, regularization='lwcov'):
     # lam also equals to np.diag(np.transpose(W)@Dxx@W)
     lam = lam[:n_components]
     W = W[:,:n_components]
+    W = np.reshape(W, (N,D,-1))
+    W = np.transpose(W,[1,0,2])
     return lam, W
+
+
+def avg_corr_coe(X, W, N, component=1):
+    avg_corr = 0
+    count = 0
+    if np.ndim(W) == 3:
+        GCCA = True
+    else:
+        GCCA = False
+    for k in range(N):
+        if GCCA:
+            w1 = W[:,k,component]
+        else:
+            w1 = W[:,component]
+        y1 = X[:,:,k]@w1
+        for l in range(N):
+            if l > k:
+                count = count + 1
+                if GCCA:
+                    w2 = W[:,l,component]
+                else:
+                    w2 = w1
+                y2 = X[:,:,l]@w2
+                corr_pvalue = pearsonr(y1, y2)
+                avg_corr = avg_corr + corr_pvalue[0]
+    avg_corr = avg_corr/count
+    return avg_corr
 
 
 def shuffle_block(X, t, fs):
