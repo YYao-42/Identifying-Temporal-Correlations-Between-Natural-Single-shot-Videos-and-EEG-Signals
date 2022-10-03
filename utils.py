@@ -8,6 +8,7 @@ from numpy import linalg as LA
 from scipy import signal
 from scipy.linalg import toeplitz, eig, eigh
 from scipy.stats import zscore, pearsonr
+from numba import jit
 
 
 def eig_sorted(X, option='descending'):
