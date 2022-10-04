@@ -15,6 +15,7 @@ def eig_sorted(X, option='descending'):
     '''
     Eigenvalue decomposition, with ranked eigenvalues
     X = V @ np.diag(lam) @ LA.inv(V)
+    Could be replaced by eig in scipy.linalg
     '''
     lam, V = LA.eig(X)
     # lam = np.real(lam)
@@ -122,11 +123,20 @@ def cano_corr(X, Y, K_regu=7):
     return corr_coe, p_value, V_A, V_B
 
 
-def GCCA(X, n_components, regularization='lwcov'):
-    _, D, N = X.shape
+def GCCA(X_stack, n_components, regularization='lwcov'):
+    '''
+    Inputs:
+    X_stack: stacked (along axis 2) data of different subjects (or even modalities)
+    n_components: number of components
+    Outputs:
+    lam: eigenvalues, related to mean squared error (not used in analysis)
+    W_stack: (rescaled) weights with shape (D*N*n_components)
+    avg_corr: average pairwise correlation
+    '''
+    _, D, N = X_stack.shape
     # From [X1; X2; ... XN] to [X1 X2 ... XN]
     # each column represents a variable, while the rows contain observations
-    X_list = [X[:,:,n] for n in range(N)]
+    X_list = [X_stack[:,:,n] for n in range(N)]
     X = np.concatenate(tuple(X_list), axis=1)
     if regularization == 'lwcov':
         Rxx = LedoitWolf().fit(X).covariance_
@@ -142,12 +152,34 @@ def GCCA(X, n_components, regularization='lwcov'):
     # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
     lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
     # lam also equals to np.diag(np.transpose(W)@Dxx@W)
-    W = np.reshape(W, (N,D,-1))
-    W = np.transpose(W, [1,0,2]) # W: D*N*n_components
-    return lam, W
+    W_stack = np.reshape(W, (N,D,-1))
+    W_stack = np.transpose(W_stack, [1,0,2]) # W: D*N*n_components
+    # Rescale weights such that the average pairwise correlation can be calculated using efficient matrix operations
+    W_stack = rescale(W_stack, Dxx)
+    W_scaled = np.transpose(W_stack,(1,0,2))
+    W_scaled = np.reshape(W_scaled, [N*D,n_components])
+    avg_corr = np.diag(np.transpose(W_scaled)@(Rxx-Dxx)@W_scaled)/np.diag(np.transpose(W_scaled)@Dxx@W_scaled)/(N-1)
+    return lam, W_stack, avg_corr
+
+
+def rescale(W, Dxx):
+    '''
+    To make w_n^H R_{xn xn} w_n = 1 for all n. Then the denominators of correlation coefficients between every pairs are the same.
+    '''
+    _, N, n_componets = W.shape
+    for i in range(n_componets):
+        W_split = np.split(W[:,:,i], N, axis=1)
+        W_blkdiag = scipy.sparse.block_diag(W_split)
+        scales = np.diag(np.transpose(W_blkdiag)@Dxx@W_blkdiag)
+        W[:,:,i] = W[:,:,i]/np.sqrt(scales)
+    return W
 
 
 def avg_corr_coe(X, W, N, n_components=5):
+    '''
+    A naive way to calculate the pairwise average correlation using for loop.
+    Very slow, especially when n_components is large.
+    '''
     avg_corr = np.zeros(n_components)
     for component in range(n_components):
         avg_corr[component] = 0
