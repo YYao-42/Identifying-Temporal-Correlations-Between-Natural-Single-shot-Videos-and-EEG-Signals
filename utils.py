@@ -62,10 +62,15 @@ def split(EEG, Sti, fold=10, fold_idx=1):
     return EEG_train, EEG_test, Sti_train, Sti_test
 
 
-def corr_component(X, n_components):
+def corr_component(X, n_components, W_train=None):
     '''
-    Input:
+    Inputs:
     X: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+    n_components: number of components
+    W_train: If not None, then goes to test mode.
+    Outputs:
+    ISC: inter-subject correlation
+    W: weights
     '''
     _, D, N = X.shape
     Rw = np.zeros([D,D])
@@ -78,8 +83,12 @@ def corr_component(X, n_components):
         invRw = PCAreg_inv(Rw, rank)
     else:
         invRw = LA.inv(Rw)
-    ISC, W = eig_sorted(invRw@Rb)
-    # ISC also equals to np.diag((np.transpose(W)@Rb@W)/(np.transpose(W)@Rw@W))
+    if W_train is not None: # Test mode
+        W = W_train
+        ISC = np.diag((np.transpose(W)@Rb@W)/(np.transpose(W)@Rw@W))
+    else: # Train mode
+        ISC, W = eig_sorted(invRw@Rb)
+    # TODO: ISC here is an approximation of real average pairwise correlation
     return ISC[:n_components], W[:,:n_components]
     
 
@@ -123,11 +132,13 @@ def cano_corr(X, Y, K_regu=7):
     return corr_coe, p_value, V_A, V_B
 
 
-def GCCA(X_stack, n_components, regularization='lwcov'):
+def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
     '''
     Inputs:
     X_stack: stacked (along axis 2) data of different subjects (or even modalities)
     n_components: number of components
+    regularization: regularization method when estimating covariance matrices (Default: LedoitWolf)
+    W_train: If not None, then goes to test mode.
     Outputs:
     lam: eigenvalues, related to mean squared error (not used in analysis)
     W_stack: (rescaled) weights with shape (D*N*n_components)
@@ -145,13 +156,18 @@ def GCCA(X_stack, n_components, regularization='lwcov'):
     Dxx = np.zeros_like(Rxx)
     for n in range(N):
         Dxx[n*D:(n+1)*D,n*D:(n+1)*D] = Rxx[n*D:(n+1)*D,n*D:(n+1)*D]
-    # Dxx and Rxx are symmetric matrices, so here we can use eigh
-    # Otherwise we should use eig, which is much slower
-    # Generalized eigenvalue decomposition
-    # Dxx @ W = Rxx @ W @ np.diag(lam)
-    # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
-    lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
-    # lam also equals to np.diag(np.transpose(W)@Dxx@W)
+    if W_train is not None: # Test mode
+        W = np.transpose(W_train,(1,0,2))
+        W = np.reshape(W, [N*D,n_components])
+        lam = np.diag(np.transpose(W)@Dxx@W)
+    else: # Train mode
+        # Dxx and Rxx are symmetric matrices, so here we can use eigh
+        # Otherwise we should use eig, which is much slower
+        # Generalized eigenvalue decomposition
+        # Dxx @ W = Rxx @ W @ np.diag(lam)
+        # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
+        lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
+        # lam also equals to np.diag(np.transpose(W)@Dxx@W)
     W_stack = np.reshape(W, (N,D,-1))
     W_stack = np.transpose(W_stack, [1,0,2]) # W: D*N*n_components
     # Rescale weights such that the average pairwise correlation can be calculated using efficient matrix operations
