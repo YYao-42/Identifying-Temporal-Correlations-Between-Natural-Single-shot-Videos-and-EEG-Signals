@@ -52,7 +52,6 @@ def convolution_mtx(L_timefilter, x):
 
 
 def split(EEG, Sti, fold=10, fold_idx=1):
-    
     T, _ = EEG.shape
     len_test = T // fold
     EEG_test = EEG[len_test*(fold_idx-1):len_test*fold_idx,:]
@@ -171,6 +170,7 @@ def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
     W_stack = np.reshape(W, (N,D,-1))
     W_stack = np.transpose(W_stack, [1,0,2]) # W: D*N*n_components
     # Rescale weights such that the average pairwise correlation can be calculated using efficient matrix operations
+    # Alternatively, just call function avg_corr_coe
     W_stack = rescale(W_stack, Dxx)
     W_scaled = np.transpose(W_stack,(1,0,2))
     W_scaled = np.reshape(W_scaled, [N*D,n_components])
@@ -191,37 +191,62 @@ def rescale(W, Dxx):
     return W
 
 
-def avg_corr_coe(X, W, N, n_components=5):
+def avg_corr_coe(X_stack, W, N, n_components=5):
     '''
-    A naive way to calculate the pairwise average correlation using for loop.
-    Very slow, especially when n_components is large.
+    Calculate the pairwise average correlation.
+    Inputs:
+    X_stack: stacked (along axis 2) data of different subjects (or even modalities)
+    W: weights 1) dim(W)=2: results of correlated component analysis 2) dim(W)=3: results of GCCA
+    N: number of datasets
+    n_components: number of components
+    Output:
+    avg_corr: average pairwise correlation
     '''
     avg_corr = np.zeros(n_components)
+    if np.ndim (W) == 2:
+        W = np.expand_dims(W, axis=1)
+        W = np.repeat(W, N, axis=1)
     for component in range(n_components):
-        avg_corr[component] = 0
-        count = 0
-        if np.ndim(W) == 3:
-            GCCA = True
-        else:
-            GCCA = False
-        for k in range(N):
-            if GCCA:
-                w1 = W[:,k,component]
-            else:
-                w1 = W[:,component]
-            y1 = X[:,:,k]@w1
-            for l in range(N):
-                if l > k:
-                    count = count + 1
-                    if GCCA:
-                        w2 = W[:,l,component]
-                    else:
-                        w2 = w1
-                    y2 = X[:,:,l]@w2
-                    corr_pvalue = pearsonr(y1, y2)
-                    avg_corr[component] = avg_corr[component] + corr_pvalue[0]
-        avg_corr[component] = avg_corr[component]/count
+        w = W[:,:,component]
+        w = np.expand_dims(w, axis=1)
+        X_trans = np.einsum('tdn,dln->tln', X_stack, w)
+        X_trans = np.squeeze(X_trans, axis=1)
+        corr_mtx = np.corrcoef(X_trans, rowvar=False)
+        avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
     return avg_corr
+
+
+# def avg_corr_coe(X, W, N, n_components=5):
+#     '''
+#     A naive way to calculate the pairwise average correlation using for loop.
+#     Very slow, especially when n_components is large.
+#     '''
+#     avg_corr = np.zeros(n_components)
+#     for component in range(n_components):
+#         avg_corr[component] = 0
+#         count = 0
+#         if np.ndim(W) == 3:
+#             GCCA = True
+#         else:
+#             GCCA = False
+#         for k in range(N):
+#             if GCCA:
+#                 w1 = W[:,k,component]
+#             else:
+#                 w1 = W[:,component]
+#             y1 = X[:,:,k]@w1
+#             for l in range(N):
+#                 if l > k:
+#                     count = count + 1
+#                     if GCCA:
+#                         w2 = W[:,l,component]
+#                     else:
+#                         w2 = w1
+#                     y2 = X[:,:,l]@w2
+#                     corr_pvalue = pearsonr(y1, y2)
+#                     avg_corr[component] = avg_corr[component] + corr_pvalue[0]
+#         avg_corr[component] = avg_corr[component]/count
+#     return avg_corr
 
 
 def shuffle_block(X, t, fs):
