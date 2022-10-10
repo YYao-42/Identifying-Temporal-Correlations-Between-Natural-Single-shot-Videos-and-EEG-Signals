@@ -52,10 +52,16 @@ def convolution_mtx(L_timefilter, x):
 
 
 def split(EEG, Sti, fold=10, fold_idx=1):
-    T, _ = EEG.shape
+    T = EEG.shape[0]
     len_test = T // fold
-    EEG_test = EEG[len_test*(fold_idx-1):len_test*fold_idx,:]
-    EEG_train = np.delete(EEG, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+    if np.ndim(EEG)==2:
+        EEG_test = EEG[len_test*(fold_idx-1):len_test*fold_idx,:]
+        EEG_train = np.delete(EEG, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+    elif np.ndim(EEG)==3:
+        EEG_test = EEG[len_test*(fold_idx-1):len_test*fold_idx,:,:]
+        EEG_train = np.delete(EEG, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+    else:
+        print('Warning: Check the dimension of EEG data')
     Sti_test = Sti[len_test*(fold_idx-1):len_test*fold_idx]
     Sti_train = np.delete(Sti, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
     return EEG_train, EEG_test, Sti_train, Sti_test
@@ -91,7 +97,7 @@ def corr_component(X, n_components, W_train=None):
     return ISC[:n_components], W[:,:n_components]
     
 
-def cano_corr(X, Y, K_regu=7):
+def cano_corr(X, Y, n_components = 5, K_regu=None, V_A=None, V_B=None):
     '''
     Input:
     X: EEG data T(#sample)xD(#channel)
@@ -99,42 +105,52 @@ def cano_corr(X, Y, K_regu=7):
     '''
     _, D = X.shape
     _, L = Y.shape
-    # compute covariance matrices
-    covXY = np.cov(X, Y, rowvar=False)
-    Rx = covXY[:D,:D]
-    Ry = covXY[D:D+L,D:D+L]
-    Rxy = covXY[:D,D:D+L]
-    Ryx = covXY[D:D+L,:D]
-    # PCA regularization is recommended (set K_regu<rank(Rx))
-    # such that the small eigenvalues dominated by noise are discarded
-    invRx = PCAreg_inv(Rx, K_regu)
-    invRy = PCAreg_inv(Ry, K_regu)
-    A = invRx@Rxy@invRy@Ryx
-    B = invRy@Ryx@invRx@Rxy
-    # lam of A and lam of B should be the same
-    # can be used as a preliminary check for correctness
-    # the correlation coefficients are already available by taking sqrt of the eigenvalues: corr_coe = np.sqrt(lam[:K_regu])
-    # or we do the following to obtain transformed X and Y and calculate corr_coe from there
-    _, V_A = eig_sorted(A)
-    _, V_B = eig_sorted(B)
-    V_A = np.real(V_A[:,:K_regu])
-    V_B = np.real(V_B[:,:K_regu])
+    if V_A is not None: # Test Mode
+        flag_test = True
+    else: # Train mode
+        flag_test = False
+        # compute covariance matrices
+        covXY = np.cov(X, Y, rowvar=False)
+        Rx = covXY[:D,:D]
+        Ry = covXY[D:D+L,D:D+L]
+        Rxy = covXY[:D,D:D+L]
+        Ryx = covXY[D:D+L,:D]
+        # PCA regularization is recommended (set K_regu<rank(Rx))
+        # such that the small eigenvalues dominated by noise are discarded
+        if K_regu is None:
+            invRx = PCAreg_inv(Rx, LA.matrix_rank(Rx))
+            invRy = PCAreg_inv(Ry, LA.matrix_rank(Ry))
+        else:
+            K_regu = min(LA.matrix_rank(Rx), LA.matrix_rank(Ry), K_regu)
+            invRx = PCAreg_inv(Rx, K_regu)
+            invRy = PCAreg_inv(Ry, K_regu)
+        A = invRx@Rxy@invRy@Ryx
+        B = invRy@Ryx@invRx@Rxy
+        # lam of A and lam of B should be the same
+        # can be used as a preliminary check for correctness
+        # the correlation coefficients are already available by taking sqrt of the eigenvalues: corr_coe = np.sqrt(lam[:K_regu])
+        # or we do the following to obtain transformed X and Y and calculate corr_coe from there
+        _, V_A = eig_sorted(A)
+        _, V_B = eig_sorted(B)
+        V_A = np.real(V_A[:,:n_components])
+        V_B = np.real(V_B[:,:n_components])
     X_trans = X@V_A
     Y_trans = Y@V_B
-    corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(K_regu)]
-    corr_coe = np.array([corr_pvalue[k][0] for k in range(K_regu)])
+    corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(n_components)]
+    corr_coe = np.array([corr_pvalue[k][0] for k in range(n_components)])
     # P-value-null hypothesis: the distributions underlying the samples are uncorrelated and normally distributed.
-    p_value = np.array([corr_pvalue[k][1] for k in range(K_regu)])
-    # to match filters v_a and v_b s.t. corr_coe is always positive
-    V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
-    corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
+    p_value = np.array([corr_pvalue[k][1] for k in range(n_components)])
+    if not flag_test:
+        # to match filters v_a and v_b s.t. corr_coe is always positive
+        V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
+        corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
     return corr_coe, p_value, V_A, V_B
 
 
 def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
     '''
     Inputs:
-    X_stack: stacked (along axis 2) data of different subjects (or even modalities)
+    X_stack: stacked (along axis 2) data of different subjects
     n_components: number of components
     regularization: regularization method when estimating covariance matrices (Default: LedoitWolf)
     W_train: If not None, then goes to test mode.
@@ -178,6 +194,51 @@ def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
     return lam, W_stack, avg_corr
 
 
+def GCCA_multi_modal(datalist, n_components, regularization='lwcov'):
+    '''
+    Inputs:
+    datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
+    n_components: number of components
+    regularization: regularization method when estimating covariance matrices (Default: LedoitWolf)
+    Outputs:
+    lam: eigenvalues, related to mean squared error (not used in analysis)
+    W_stack: (rescaled) weights with shape (D*N*n_components)
+    '''
+    dim_list = []
+    flatten_list = []
+    for data in datalist:
+        if np.ndim(data) == 3:
+            _, D, N = data.shape
+            X_list = [data[:,:,n] for n in range(N)]
+            X = np.concatenate(tuple(X_list), axis=1)
+            flatten_list.append(X)
+            dim_list = dim_list + [D]*N
+        elif np.ndim(data) == 2:
+            _, L = data.shape
+            flatten_list.append(data)
+            dim_list.append(L)
+        else:
+            print('Warning: Check dim of data')
+    X_mm = np.concatenate(tuple(flatten_list), axis=1)
+    if regularization == 'lwcov':
+        Rxx = LedoitWolf().fit(X_mm).covariance_
+    else:
+        Rxx = np.cov(X_mm, rowvar=False)
+    Dxx = np.zeros_like(Rxx)
+    dim_accumu = 0
+    for dim in dim_list:
+        Dxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim]
+        dim_accumu = dim_accumu + dim
+    # Dxx and Rxx are symmetric matrices, so here we can use eigh
+    # Otherwise we should use eig, which is much slower
+    # Generalized eigenvalue decomposition
+    # Dxx @ W = Rxx @ W @ np.diag(lam)
+    # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
+    lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
+    # lam also equals to np.diag(np.transpose(W)@Dxx@W)
+    return lam, W[:,:n_components]
+
+
 def rescale(W, Dxx):
     '''
     To make w_n^H R_{xn xn} w_n = 1 for all n. Then the denominators of correlation coefficients between every pairs are the same.
@@ -212,6 +273,39 @@ def avg_corr_coe(X_stack, W, N, n_components=5):
         X_trans = np.einsum('tdn,dln->tln', X_stack, w)
         X_trans = np.squeeze(X_trans, axis=1)
         corr_mtx = np.corrcoef(X_trans, rowvar=False)
+        avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
+    return avg_corr
+
+
+def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5):
+    '''
+    Calculate the pairwise average correlation.
+    Inputs:
+    datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
+    Wlist: weights of different modalities (a list)
+    n_components: number of components
+    Output:
+    avg_corr: average pairwise correlation
+    '''
+    avg_corr = np.zeros(n_components)
+    n_mod = len(datalist)
+    for component in range(n_components):
+        X_trans_list = []
+        for i in range(n_mod):
+            W = Wlist[i]
+            if np.ndim(W) == 3:
+                w = W[:,:,component]
+                w = np.expand_dims(w, axis=1)
+                X_trans = np.einsum('tdn,dln->tln', datalist[i], w)
+                X_trans = np.squeeze(X_trans, axis=1)
+            if np.ndim(W) == 2:
+                w = W[:,component]
+                X_trans = datalist[i]@w
+                X_trans = np.expand_dims(X_trans, axis=1)
+            X_trans_list.append(X_trans)
+        X_trans_all = np.concatenate(tuple(X_trans_list), axis=1)
+        corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
+        N = X_trans_all.shape[1]
         avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
     return avg_corr
 
