@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import os
+import mne
 import scipy.io
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
@@ -401,3 +402,43 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
         X.append(np.transpose(data_per_subject))
     X = np.stack(tuple(X), axis=2)
     return X, fs
+
+
+def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, rename=True):
+    '''
+    Preprocessing of the raw signal
+    Re-reference -> Highpass filter (-> downsample)
+    No artifact removal technique has been applied yet
+    Inputs:
+    file_path: location of the eeg dataset
+    HP_cutoff: cut off frequency of the high pass filter (for removing slow drifts)
+    AC_freqs: AC power line frequency
+    resamp_freqs: resampling frequency (if None then resampling is not needed)
+    rename: if true then map the original channel names to names in 10-20 system
+    Output:
+    row_notch or raw_downsampled: preprocessed eeg
+    '''
+    raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
+    if rename:
+        raw_lab.rename_channels({'B1': 'Fpz', 'B2': 'Fp2', 'B3': 'AF8', 'B4': 'AF4',
+                                'B5': 'Afz', 'B6': 'Fz', 'B7': 'F2','B8': 'F4', 'B9': 'F6', 'B10': 'F8',
+                                'B11': 'FT8', 'B12': 'FC6', 'B13': 'FC4', 'B14': 'FC2', 'B15': 'FCz', 'B16': 'Cz', 
+                                'B17': 'C2', 'B18': 'C4', 'B19': 'C6', 'B20': 'T8', 'B21': 'TP8', 'B22': 'CP6',
+                                'B23': 'CP4', 'B24': 'CP2', 'B25': 'P2', 'B26': 'P4', 'B27': 'P6', 'B28': 'P8', 
+                                'B29': 'P10', 'B30': 'PO8', 'B31': 'PO4', 'B32': 'O2'})
+    # Re-reference
+    raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
+    # TODO: Is removing dc offset necessary after re-referencing?
+    # Highpass filter - remove slow drifts
+    raw_highpass = raw_lab.copy().filter(l_freq=HP_cutoff, h_freq=None)
+    # raw_highpass.compute_psd().plot(average=True)
+    # Remove power line noise
+    row_notch = raw_highpass.copy().notch_filter(freqs=AC_freqs)
+    # row_notch.compute_psd().plot(average=True)
+    # Resampling
+    if resamp_freqs is not None:
+        raw_downsampled = row_notch.copy().resample(sfreq=resamp_freqs)
+        # raw_downsampled.compute_psd().plot(average=True)
+        return raw_downsampled
+    else:
+        return row_notch
