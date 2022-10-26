@@ -417,8 +417,10 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, re
     rename: if true then map the original channel names to names in 10-20 system
     Output:
     row_notch or raw_downsampled: preprocessed eeg
+    fsEEG or resamp_freqs: the sample frequency of the EEG signal (original or down sampled)
     '''
     raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
+    fsEEG = raw_lab.info['sfreq']
     if rename:
         raw_lab.rename_channels({'B1': 'Fpz', 'B2': 'Fp2', 'B3': 'AF8', 'B4': 'AF4',
                                 'B5': 'Afz', 'B6': 'Fz', 'B7': 'F2','B8': 'F4', 'B9': 'F6', 'B10': 'F8',
@@ -439,6 +441,116 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, re
     if resamp_freqs is not None:
         raw_downsampled = row_notch.copy().resample(sfreq=resamp_freqs)
         # raw_downsampled.compute_psd().plot(average=True)
-        return raw_downsampled
+        return raw_downsampled, resamp_freqs
     else:
-        return row_notch
+        return row_notch, fsEEG
+
+
+def name_paths(eeg_path_head, feature_path_head):
+    '''
+    Find the name of the videos and the paths of the corresponding eeg signals and features
+    Inputs:
+    eeg_path_head: relative path of the eeg folder
+    feature_path_head: relative path of the feature folder
+    Output:
+    videonames: names of the video
+    eeg_sets_paths: relative paths of the eeg sets
+    feature_sets_paths: relative paths of the feature sets
+    '''
+    eeg_list = os.listdir(eeg_path_head)
+    eeg_sets = [i for i in eeg_list if i.endswith('.set')]
+    eeg_sets_paths = [eeg_path_head+i for i in eeg_sets]
+    feature_list = os.listdir(feature_path_head)
+    feature_sets = [i for i in feature_list if i.endswith('.mat')]
+    feature_sets_paths = [feature_path_head+i for i in feature_sets]
+    videonames = [i[:-4] for i in eeg_sets]
+    return videonames, eeg_sets_paths, feature_sets_paths
+
+
+def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow'):
+    '''
+    Load the features and eeg signals of a specific dataset
+    Inputs:
+    idx: the index of the wanted dataset
+    videonames: names of the video
+    eeg_sets_paths: relative paths of the eeg sets
+    feature_sets_paths: relative paths of the feature sets
+    Outputs:
+    eeg_downsampled: down sampled (and preprocessed) eeg signals
+    normalized_features: normalized features 
+    times: time axis 
+    fsStim: sample rate of both stimulus and eeg signals
+    '''
+    # Load features and EEG signals
+    videoname = videonames[idx]
+    matching = [s for s in feature_sets_paths if videoname in s]
+    assert len(matching) == 1
+    features_data = scipy.io.loadmat(matching[0])
+    fsStim = int(features_data['fsVideo']) # fs of the video 
+    features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
+    eeg_prepro, _ = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim, rename=True)
+    # Clip data
+    eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
+    eeg_downsampled, times = eeg_prepro[eeg_channel_indices]
+    if len(features) > len(times):
+        features = features[:len(times)]
+    else:
+        times = times[:len(features)]
+        eeg_downsampled = eeg_downsampled[:,:len(features)]
+    eeg_downsampled = eeg_downsampled.T
+    normalized_features = zscore(features) # normalize features
+    fs = fsStim
+    return eeg_downsampled, normalized_features, times, fs
+
+
+def concatenate_eeg_feature(videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow'):
+    eeg_downsampled_list = []
+    normalized_features_list = []
+    for idx in range(len(videonames)):
+        eeg_downsampled, normalized_features, _, fs = load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type)
+        eeg_downsampled_list.append(eeg_downsampled)
+        normalized_features_list.append(normalized_features)
+    # TODO: Do we need to normalize eeg signals when concatenating them?
+    eeg_concat = np.concatenate(eeg_downsampled_list, axis=0)
+    normalized_features_concat = np.concatenate(normalized_features_list)
+    times = np.array(range(len(normalized_features_concat)))/fs
+    return eeg_concat, normalized_features_concat, times, fs
+
+
+def load_eeg_env(idx, audionames, eeg_sets_paths, env_sets_paths, resamp_freq=20, band=[2, 9]):
+    # Load features and EEG signals
+    audioname = audionames[idx]
+    matching = [s for s in env_sets_paths if audioname in s]
+    assert len(matching) == 1
+    envelope = np.squeeze(scipy.io.loadmat(matching[0])['envelope'])
+    eeg_prepro, fsEEG = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, rename=True)
+    # Clip data
+    eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
+    eeg, times = eeg_prepro[eeg_channel_indices]
+    if len(envelope) > len(times):
+        envelope = envelope[:len(times)]
+    else:
+        eeg = eeg[:,:len(envelope)]
+    # Band-pass and down sample
+    sos_bp = signal.butter(4, band, 'bandpass', output='sos', fs=fsEEG)
+    eeg_filtered = signal.sosfilt(sos_bp, eeg)
+    env_filtered = signal.sosfilt(sos_bp, envelope)
+    eeg_downsampled = signal.resample_poly(eeg_filtered, resamp_freq, fsEEG, axis=1)
+    env_downsampled = signal.resample_poly(env_filtered, resamp_freq, fsEEG)
+    eeg_downsampled = eeg_downsampled.T
+    times = np.array(range(len(eeg_downsampled)))/resamp_freq
+    return eeg_downsampled, env_downsampled, times
+
+
+def concatenate_eeg_env(audionames, eeg_sets_paths, env_sets_paths, resamp_freq=20, band=[2, 9]):
+    eeg_downsampled_list = []
+    env_downsampled_list = []
+    for idx in range(len(audionames)):
+        eeg_downsampled, env_downsampled, _ = load_eeg_env(idx, audionames, eeg_sets_paths, env_sets_paths, resamp_freq, band)
+        eeg_downsampled_list.append(eeg_downsampled)
+        env_downsampled_list.append(env_downsampled)
+    # TODO: Do we need to normalize eeg signals when concatenating them?
+    eeg_concat = np.concatenate(eeg_downsampled_list, axis=0)
+    env_concat = np.concatenate(env_downsampled_list)
+    times = np.array(range(len(env_concat)))/resamp_freq
+    return eeg_concat, env_concat, times
