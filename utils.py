@@ -404,34 +404,32 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
     return X, fs
 
 
-def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, rename=True):
+def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None):
     '''
     Preprocessing of the raw signal
     Re-reference -> Highpass filter (-> downsample)
     No artifact removal technique has been applied yet
     Inputs:
     file_path: location of the eeg dataset
-    HP_cutoff: cut off frequency of the high pass filter (for removing slow drifts)
+    HP_cutoff: cut off frequency of the high pass filter (for removing DC components and slow drifts)
     AC_freqs: AC power line frequency
     resamp_freqs: resampling frequency (if None then resampling is not needed)
-    rename: if true then map the original channel names to names in 10-20 system
     Output:
-    row_notch or raw_downsampled: preprocessed eeg
-    fsEEG or resamp_freqs: the sample frequency of the EEG signal (original or down sampled)
+    preprocessed: preprocessed eeg
+    fs: the sample frequency of the EEG signal (original or down sampled)
     '''
     raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
     fsEEG = raw_lab.info['sfreq']
-    if rename:
-        raw_lab.rename_channels({'B1': 'Fpz', 'B2': 'Fp2', 'B3': 'AF8', 'B4': 'AF4',
-                                'B5': 'Afz', 'B6': 'Fz', 'B7': 'F2','B8': 'F4', 'B9': 'F6', 'B10': 'F8',
-                                'B11': 'FT8', 'B12': 'FC6', 'B13': 'FC4', 'B14': 'FC2', 'B15': 'FCz', 'B16': 'Cz', 
-                                'B17': 'C2', 'B18': 'C4', 'B19': 'C6', 'B20': 'T8', 'B21': 'TP8', 'B22': 'CP6',
-                                'B23': 'CP4', 'B24': 'CP2', 'B25': 'P2', 'B26': 'P4', 'B27': 'P6', 'B28': 'P8', 
-                                'B29': 'P10', 'B30': 'PO8', 'B31': 'PO4', 'B32': 'O2'})
+    # Rename channels and set montages
+    biosemi_layout = mne.channels.read_layout('biosemi')
+    ch_names_map = dict(zip(raw_lab.info['ch_names'], biosemi_layout.names))
+    raw_lab.rename_channels(ch_names_map)
+    montage = mne.channels.make_standard_montage('biosemi64')
+    raw_lab.set_montage(montage)
     # Re-reference
-    raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
-    # TODO: Is removing dc offset necessary after re-referencing?
-    # Highpass filter - remove slow drifts
+    # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
+    raw_lab.set_eeg_reference(ref_channels='average') # Apply an average reference
+    # Highpass filter - remove DC components and slow drifts
     raw_highpass = raw_lab.copy().filter(l_freq=HP_cutoff, h_freq=None)
     # raw_highpass.compute_psd().plot(average=True)
     # Remove power line noise
@@ -441,9 +439,12 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, re
     if resamp_freqs is not None:
         raw_downsampled = row_notch.copy().resample(sfreq=resamp_freqs)
         # raw_downsampled.compute_psd().plot(average=True)
-        return raw_downsampled, resamp_freqs
+        preprocessed = raw_downsampled
+        fs = resamp_freqs
     else:
-        return row_notch, fsEEG
+        preprocessed = row_notch
+        fs = fsEEG
+    return preprocessed, fs
 
 
 def name_paths(eeg_path_head, feature_path_head):
@@ -488,7 +489,7 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
     features_data = scipy.io.loadmat(matching[0])
     fsStim = int(features_data['fsVideo']) # fs of the video 
     features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
-    eeg_prepro, _ = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim, rename=True)
+    eeg_prepro, _ = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim)
     # Clip data
     eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
     eeg_downsampled, times = eeg_prepro[eeg_channel_indices]
@@ -500,6 +501,8 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
     eeg_downsampled = eeg_downsampled.T
     normalized_features = zscore(features) # normalize features
     fs = fsStim
+    export_path = eeg_sets_paths[idx][:-4] + '.mat'
+    scipy.io.savemat(export_path, {'eeg'+videoname: eeg_downsampled.T, 'fs': fs})
     return eeg_downsampled, normalized_features, times, fs
 
 
@@ -523,7 +526,7 @@ def load_eeg_env(idx, audionames, eeg_sets_paths, env_sets_paths, resamp_freq=20
     matching = [s for s in env_sets_paths if audioname in s]
     assert len(matching) == 1
     envelope = np.squeeze(scipy.io.loadmat(matching[0])['envelope'])
-    eeg_prepro, fsEEG = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, rename=True)
+    eeg_prepro, fsEEG = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50)
     # Clip data
     eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
     eeg, times = eeg_prepro[eeg_channel_indices]
