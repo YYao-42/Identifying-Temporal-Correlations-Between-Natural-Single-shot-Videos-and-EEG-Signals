@@ -98,7 +98,7 @@ def corr_component(X, n_components, W_train=None):
     return ISC[:n_components], W[:,:n_components]
     
 
-def cano_corr(X, Y, n_components = 5, K_regu=None, V_A=None, V_B=None):
+def cano_corr(X, Y, n_components = 5, regularizaion=None, K_regu=None, V_A=None, V_B=None):
     '''
     Input:
     X: EEG data T(#sample)xD(#channel)
@@ -106,12 +106,16 @@ def cano_corr(X, Y, n_components = 5, K_regu=None, V_A=None, V_B=None):
     '''
     _, D = X.shape
     _, L = Y.shape
+    XY = np.concatenate((X,Y), axis=1)
     if V_A is not None: # Test Mode
         flag_test = True
     else: # Train mode
         flag_test = False
         # compute covariance matrices
-        covXY = np.cov(X, Y, rowvar=False)
+        if regularizaion=='lwcov':
+            covXY = LedoitWolf().fit(XY).covariance_
+        else:
+            covXY = np.cov(XY, rowvar=False)
         Rx = covXY[:D,:D]
         Ry = covXY[D:D+L,D:D+L]
         Rxy = covXY[:D,D:D+L]
@@ -169,6 +173,11 @@ def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
         Rxx = LedoitWolf().fit(X).covariance_
     else:
         Rxx = np.cov(X, rowvar=False)
+        # In case Rxx is not semi-definite positive 
+        lam_Rxx, W_Rxx = eigh(Rxx)
+        if lam_Rxx[0]<0:
+            lam_Rxx = lam_Rxx-lam_Rxx[0]
+        Rxx = W_Rxx@np.diag(lam_Rxx)@W_Rxx.T
     Dxx = np.zeros_like(Rxx)
     for n in range(N):
         Dxx[n*D:(n+1)*D,n*D:(n+1)*D] = Rxx[n*D:(n+1)*D,n*D:(n+1)*D]
@@ -225,6 +234,11 @@ def GCCA_multi_modal(datalist, n_components, regularization='lwcov'):
         Rxx = LedoitWolf().fit(X_mm).covariance_
     else:
         Rxx = np.cov(X_mm, rowvar=False)
+        # In case Rxx is not semi-definite positive 
+        lam_Rxx, W_Rxx = eigh(Rxx)
+        if lam_Rxx[0]<0:
+            lam_Rxx = lam_Rxx-lam_Rxx[0]
+        Rxx = W_Rxx@np.diag(lam_Rxx)@W_Rxx.T
     Dxx = np.zeros_like(Rxx)
     dim_accumu = 0
     for dim in dim_list:
@@ -501,8 +515,8 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
     eeg_downsampled = eeg_downsampled.T
     normalized_features = zscore(features) # normalize features
     fs = fsStim
-    export_path = eeg_sets_paths[idx][:-4] + '.mat'
-    scipy.io.savemat(export_path, {'eeg'+videoname: eeg_downsampled.T, 'fs': fs})
+    # export_path = eeg_sets_paths[idx][:-4] + '.mat'
+    # scipy.io.savemat(export_path, {'eeg'+videoname: eeg_downsampled.T, 'fs': fs})
     return eeg_downsampled, normalized_features, times, fs
 
 
@@ -557,3 +571,27 @@ def concatenate_eeg_env(audionames, eeg_sets_paths, env_sets_paths, resamp_freq=
     env_concat = np.concatenate(env_downsampled_list)
     times = np.array(range(len(env_concat)))/resamp_freq
     return eeg_concat, env_concat, times
+
+
+def multisub_data_org(subjects, video, feature_type='muFlow'):
+    feature_path = '../../Experiments/Videos/' + video + '_features.mat'
+    features_data = scipy.io.loadmat(feature_path)
+    fsStim = int(features_data['fsVideo']) # fs of the video 
+    features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
+    T = features.shape[0]
+    eeg_list = []
+    for sub in subjects:
+        eeg_path = '../../Experiments/data/'+ sub +'/Videos/' + video + '.set'
+        eeg_prepro, fs = preprocessing(eeg_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim)
+        eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
+        eeg_downsampled, _ = eeg_prepro[eeg_channel_indices]
+        eeg_downsampled = eeg_downsampled.T
+        eeg_list.append(eeg_downsampled)
+        if eeg_downsampled.shape[0] < T:
+            T = eeg_downsampled.shape[0]
+    # Clip data
+    features = features[:T]
+    eeg_list = [np.expand_dims(eeg[:T,:], axis=2) for eeg in eeg_list]
+    eeg_multisub = np.concatenate(tuple(eeg_list), axis=2)
+    times = np.array(range(T))/fs
+    return features, eeg_multisub, fs, times
