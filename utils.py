@@ -45,11 +45,51 @@ def PCAreg_inv(X, rank):
     return inv
 
 
-def convolution_mtx(L_timefilter, x):
+def convolution_mtx(L_timefilter, x, causal=True):
+    '''
+    Calculate the convolution matrix
+    Convolution: y(t)=x(t)*h(t)
+    In matrix form: y=Xh E.g. time lag = 3
+    If causal,
+    h = h(0); h(1); h(2)
+    X = 
+    x(0)   x(-1)  x(-2)
+    x(1)   x(0)   x(-1)
+            ...
+    x(T-1) x(T-2) x(T-3)
+    If non-causal,
+    h = h(-1); h(0); h(1)
+    X = 
+    x(1)   x(0)   x(-1)
+    x(2)   x(1)   x(0)
+            ...
+    x(T)   x(T-1) x(T-2)
+    Unknown values are set as 0
+    '''
     first_col = np.zeros(L_timefilter)
     first_col[0] = x[0]
-    conv_mtx = np.transpose(toeplitz(first_col, x))
+    if causal:
+        conv_mtx = np.transpose(toeplitz(first_col, x))
+    else:
+        assert(L_timefilter % 2 ==1)
+        L = int((L_timefilter-1)/2)
+        x = np.append(x, [np.zeros((1,L))])
+        conv_mtx = np.transpose(toeplitz(first_col, x))
+        conv_mtx = conv_mtx[L:,:]
     return conv_mtx
+
+
+def block_Hankel(X, L, causal=False):
+    '''
+    For spatial-temporal filter, calculate the block Hankel matrix
+    Inputs:
+    X: T(#sample)xD(#channel)
+    L: number of time lags; from -(L-1) to 0 (causal) or -(L-1)/2 to (L-1)/2 (non-causal)
+    causal: default false
+    '''
+    Hankel_list = [convolution_mtx(L, X[:,i], causal=causal) for i in range(X.shape[1])]
+    blockHankel = np.concatenate(tuple(Hankel_list), axis=1)
+    return blockHankel
 
 
 def split(EEG, Sti, fold=10, fold_idx=1):
@@ -66,6 +106,25 @@ def split(EEG, Sti, fold=10, fold_idx=1):
     Sti_test = Sti[len_test*(fold_idx-1):len_test*fold_idx]
     Sti_train = np.delete(Sti, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
     return EEG_train, EEG_test, Sti_train, Sti_test
+
+
+def split_multi_mod(datalist, fold=10, fold_idx=1):
+    train_list = []
+    test_list = []
+    for data in datalist:
+        T = data.shape[0]
+        len_test = T // fold
+        if np.ndim(data)==2:
+            data_test = data[len_test*(fold_idx-1):len_test*fold_idx,:]
+            data_train = np.delete(data, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+        elif np.ndim(data)==3:
+            data_test = data[len_test*(fold_idx-1):len_test*fold_idx,:,:]
+            data_train = np.delete(data, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+        else:
+            print('Warning: Check the dimension of data')
+        train_list.append(data_train)
+        test_list.append(data_test)
+    return train_list, test_list
 
 
 def corr_component(X, n_components, W_train=None):
@@ -101,7 +160,7 @@ def corr_component(X, n_components, W_train=None):
 def cano_corr(X, Y, n_components = 5, regularizaion=None, K_regu=None, V_A=None, V_B=None):
     '''
     Input:
-    X: EEG data T(#sample)xD(#channel)
+    X: EEG data T(#sample)xD(#channel) or TxDL if use spatial-temporal filter
     Y: Stimulus T(#sample)xL(#tap)
     '''
     _, D = X.shape
@@ -204,29 +263,34 @@ def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
     return lam, W_stack, avg_corr
 
 
-def GCCA_multi_modal(datalist, n_components, regularization='lwcov'):
+def GCCA_multi_modal(datalist, n_components, rhos, regularization='lwcov'):
     '''
     Inputs:
     datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
     n_components: number of components
+    rhos: controls the weights of different modalities; should have the same length as the datalist
     regularization: regularization method when estimating covariance matrices (Default: LedoitWolf)
     Outputs:
-    lam: eigenvalues, related to mean squared error (not used in analysis)
-    W_stack: (rescaled) weights with shape (D*N*n_components)
+    Wlist: weights of different modalities (a list)
     '''
     dim_list = []
     flatten_list = []
-    for data in datalist:
+    rho_list = []
+    for i in range(len(datalist)):
+        data = datalist[i]
+        rho = rhos[i]
         if np.ndim(data) == 3:
             _, D, N = data.shape
             X_list = [data[:,:,n] for n in range(N)]
             X = np.concatenate(tuple(X_list), axis=1)
             flatten_list.append(X)
             dim_list = dim_list + [D]*N
+            rho_list = rho_list + [rho]*(D*N)
         elif np.ndim(data) == 2:
             _, L = data.shape
             flatten_list.append(data)
             dim_list.append(L)
+            rho_list = rho_list + [rho]*L
         else:
             print('Warning: Check dim of data')
     X_mm = np.concatenate(tuple(flatten_list), axis=1)
@@ -234,16 +298,17 @@ def GCCA_multi_modal(datalist, n_components, regularization='lwcov'):
         Rxx = LedoitWolf().fit(X_mm).covariance_
     else:
         Rxx = np.cov(X_mm, rowvar=False)
-        # In case Rxx is not semi-definite positive 
-        lam_Rxx, W_Rxx = eigh(Rxx)
-        if lam_Rxx[0]<0:
-            lam_Rxx = lam_Rxx-lam_Rxx[0]
-        Rxx = W_Rxx@np.diag(lam_Rxx)@W_Rxx.T
+        # TODO: In case Rxx is not semi-definite positive 
+        # lam_Rxx, W_Rxx = eigh(Rxx)
+        # if lam_Rxx[0]<0:
+        #     lam_Rxx = lam_Rxx-lam_Rxx[0]
+        # Rxx = W_Rxx@np.diag(lam_Rxx)@W_Rxx.T
     Dxx = np.zeros_like(Rxx)
     dim_accumu = 0
     for dim in dim_list:
         Dxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim]
         dim_accumu = dim_accumu + dim
+    Rxx = Rxx*np.expand_dims(np.array(rho_list), axis=0)
     # Dxx and Rxx are symmetric matrices, so here we can use eigh
     # Otherwise we should use eig, which is much slower
     # Generalized eigenvalue decomposition
@@ -251,7 +316,57 @@ def GCCA_multi_modal(datalist, n_components, regularization='lwcov'):
     # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
     lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
     # lam also equals to np.diag(np.transpose(W)@Dxx@W)
-    return lam, W[:,:n_components]
+    Wlist = W_organize(W[:,:n_components], datalist)
+    return Wlist
+
+
+def W_organize(W, datalist):
+    W_list = []
+    dim_start = 0
+    for data in datalist:
+        if np.ndim(data) == 3:
+            _, D, N = data.shape
+            dim_end = dim_start + D*N
+            W_temp = W[dim_start:dim_end,:]
+            W_stack = np.reshape(W_temp, (N,D,-1))
+            W_list.append(np.transpose(W_stack, [1,0,2]))
+        elif np.ndim(data) == 2:
+            _, D = data.shape
+            dim_end = dim_start + D
+            W_list.append(W[dim_start:dim_end,:])
+        else:
+            print('Warning: Check the dim of data')
+        dim_start = dim_end
+    return W_list
+
+
+def forward_model(X, W, regularization=None):
+    '''
+    Reference: On the interpretation of weight vectors of linear models in multivariate neuroimaging https://www.sciencedirect.com/science/article/pii/S1053811913010914
+    Backward models: Extract latent factors as functions of the observed data s(t) = W^T x(t)
+    Forward models: Reconstruct observations from latent factors x(t) = As(t) + n(t)
+    x(t): D-dimensional observations
+    s(t): K-dimensional latent factors
+    W: backward model
+    A: forward model
+
+    In our use case the backward model can be found using (G)CCA. Latent factors are the representations generated by different components.
+    The forward model has a general form (see the reference): A = Rxx W inv(Rss) = Rxx W inv(W^T Rxx W)
+
+    Inputs:
+    X: observations (one subject) TxD
+    W: filters/backward models DxK
+    regularization: lwcov or none
+
+    Output:
+    A: forward model
+    '''
+    if regularization == 'lwcov':
+        Rxx = LedoitWolf().fit(X).covariance_
+    else:
+        Rxx = np.cov(X, rowvar=False)
+    A = Rxx@W@LA.inv(W.T@Rxx@W)
+    return A
 
 
 def rescale(W, Dxx):
@@ -325,37 +440,31 @@ def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5):
     return avg_corr
 
 
-# def avg_corr_coe(X, W, N, n_components=5):
-#     '''
-#     A naive way to calculate the pairwise average correlation using for loop.
-#     Very slow, especially when n_components is large.
-#     '''
-#     avg_corr = np.zeros(n_components)
-#     for component in range(n_components):
-#         avg_corr[component] = 0
-#         count = 0
-#         if np.ndim(W) == 3:
-#             GCCA = True
-#         else:
-#             GCCA = False
-#         for k in range(N):
-#             if GCCA:
-#                 w1 = W[:,k,component]
-#             else:
-#                 w1 = W[:,component]
-#             y1 = X[:,:,k]@w1
-#             for l in range(N):
-#                 if l > k:
-#                     count = count + 1
-#                     if GCCA:
-#                         w2 = W[:,l,component]
-#                     else:
-#                         w2 = w1
-#                     y2 = X[:,:,l]@w2
-#                     corr_pvalue = pearsonr(y1, y2)
-#                     avg_corr[component] = avg_corr[component] + corr_pvalue[0]
-#         avg_corr[component] = avg_corr[component]/count
-#     return avg_corr
+def cross_val_CCA(EEG, feature, L_timefilter, fold=10, n_components=5, regularizaion='lwcov', K_regu=None):
+    corr_train = np.zeros((fold, n_components))
+    corr_test = np.zeros((fold, n_components))
+    for idx in range(fold):
+        EEG_train, EEG_test, Sti_train, Sti_test = split(EEG, feature, fold=fold, fold_idx=idx+1)
+        conv_mtx_train = convolution_mtx(L_timefilter, Sti_train)
+        corr_train[idx,:], _, V_A_train, V_B_train = cano_corr(EEG_train, conv_mtx_train, n_components=n_components, regularizaion=regularizaion, K_regu=K_regu)
+        conv_mtx_test = convolution_mtx(L_timefilter, Sti_test)
+        corr_test[idx,:], _, _, _ = cano_corr(EEG_test, conv_mtx_test, n_components=n_components, V_A=V_A_train, V_B=V_B_train)
+    return corr_train, corr_test
+
+
+def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fold=10, n_components=5, regularizaion='lwcov'):
+    n_mod = len(datalist)
+    corr_train = np.zeros((fold, n_components))
+    corr_test = np.zeros((fold, n_components))
+    for idx in range(fold):
+        train_list, test_list = split_multi_mod(datalist, fold=fold, fold_idx=idx+1)
+        for i in range(1, n_mod):
+            train_list[i] = convolution_mtx(L_timefilter, train_list[i])
+            test_list[i] = convolution_mtx(L_timefilter, test_list[i])
+        Wlist_train = GCCA_multi_modal(train_list, n_components=n_components, rhos=rhos, regularization=regularizaion)
+        corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, n_components=n_components)
+        corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, n_components=n_components)
+    return corr_train, corr_test
 
 
 def shuffle_block(X, t, fs):
