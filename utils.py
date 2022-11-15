@@ -407,7 +407,7 @@ def avg_corr_coe(X_stack, W, N, n_components=5):
     return avg_corr
 
 
-def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5):
+def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5, regularization=None):
     '''
     Calculate the pairwise average correlation.
     Inputs:
@@ -434,7 +434,12 @@ def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5):
                 X_trans = np.expand_dims(X_trans, axis=1)
             X_trans_list.append(X_trans)
         X_trans_all = np.concatenate(tuple(X_trans_list), axis=1)
-        corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
+        if regularization=='lwcov':
+            cov_mtx = LedoitWolf().fit(X_trans_all).covariance_
+            cov_diag = np.expand_dims(np.diag(cov_mtx).shape, axis = 1)
+            corr_mtx = cov_mtx/np.sqrt(cov_diag)/np.sqrt(cov_diag.T)
+        else:
+            corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
         N = X_trans_all.shape[1]
         avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
     return avg_corr
@@ -527,7 +532,7 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
     return X, fs
 
 
-def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None):
+def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, bads=[], eog=False):
     '''
     Preprocessing of the raw signal
     Re-reference -> Highpass filter (-> downsample)
@@ -537,21 +542,20 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None):
     HP_cutoff: cut off frequency of the high pass filter (for removing DC components and slow drifts)
     AC_freqs: AC power line frequency
     resamp_freqs: resampling frequency (if None then resampling is not needed)
+    bads: list of bad channels
+    eog: if contains 4 eog channels
     Output:
     preprocessed: preprocessed eeg
     fs: the sample frequency of the EEG signal (original or down sampled)
     '''
     raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
     fsEEG = raw_lab.info['sfreq']
-    # Rename channels and set montages
-    biosemi_layout = mne.channels.read_layout('biosemi')
-    ch_names_map = dict(zip(raw_lab.info['ch_names'], biosemi_layout.names))
-    raw_lab.rename_channels(ch_names_map)
-    montage = mne.channels.make_standard_montage('biosemi64')
-    raw_lab.set_montage(montage)
-    # Re-reference
-    # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
-    raw_lab.set_eeg_reference(ref_channels='average') # Apply an average reference
+    # If there are EOG channels, first treat them as EEG channels and do filterings and resamplings.
+    if eog:
+        misc_names = [raw_lab.info.ch_names[i] for i in mne.pick_types(raw_lab.info, misc=True)]
+        type_eeg = ['eeg']*len(misc_names)
+        change_type_dict = dict(zip(misc_names, type_eeg))
+        raw_lab.set_channel_types(change_type_dict)
     # Highpass filter - remove DC components and slow drifts
     raw_highpass = raw_lab.copy().filter(l_freq=HP_cutoff, h_freq=None)
     # raw_highpass.compute_psd().plot(average=True)
@@ -567,6 +571,24 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None):
     else:
         preprocessed = row_notch
         fs = fsEEG
+    # Then set EOG channels to their true type
+    if eog:
+        type_true = ['eog']*len(misc_names)
+        change_type_dict = dict(zip(misc_names, type_true))
+        preprocessed.set_channel_types(change_type_dict)
+    # Rename channels and set montages
+    biosemi_layout = mne.channels.read_layout('biosemi')
+    ch_names_map = dict(zip(preprocessed.info['ch_names'], biosemi_layout.names))
+    preprocessed.rename_channels(ch_names_map)
+    montage = mne.channels.make_standard_montage('biosemi64')
+    preprocessed.set_montage(montage)
+    if len(bads)>0:
+        # Interpolate bad channels
+        preprocessed.info['bads'] = bads
+        preprocessed.interpolate_bads()
+    # Re-reference
+    # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
+    preprocessed.set_eeg_reference(ref_channels='average') # Apply an average reference
     return preprocessed, fs
 
 
