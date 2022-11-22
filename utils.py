@@ -165,18 +165,18 @@ def cano_corr(X, Y, n_components = 5, regularizaion=None, K_regu=None, V_A=None,
     '''
     _, D = X.shape
     _, L = Y.shape
-    XY = np.concatenate((X,Y), axis=1)
     if V_A is not None: # Test Mode
         flag_test = True
     else: # Train mode
         flag_test = False
         # compute covariance matrices
+        covXY = np.cov(X, Y, rowvar=False)
         if regularizaion=='lwcov':
-            covXY = LedoitWolf().fit(XY).covariance_
+            Rx = LedoitWolf().fit(X).covariance_
+            Ry = LedoitWolf().fit(Y).covariance_
         else:
-            covXY = np.cov(XY, rowvar=False)
-        Rx = covXY[:D,:D]
-        Ry = covXY[D:D+L,D:D+L]
+            Rx = covXY[:D,:D]
+            Ry = covXY[D:D+L,D:D+L]
         Rxy = covXY[:D,D:D+L]
         Ryx = covXY[D:D+L,:D]
         # PCA regularization is recommended (set K_regu<rank(Rx))
@@ -294,18 +294,12 @@ def GCCA_multi_modal(datalist, n_components, rhos, regularization='lwcov'):
         else:
             print('Warning: Check dim of data')
     X_mm = np.concatenate(tuple(flatten_list), axis=1)
-    if regularization == 'lwcov':
-        Rxx = LedoitWolf().fit(X_mm).covariance_
-    else:
-        Rxx = np.cov(X_mm, rowvar=False)
-        # TODO: In case Rxx is not semi-definite positive 
-        # lam_Rxx, W_Rxx = eigh(Rxx)
-        # if lam_Rxx[0]<0:
-        #     lam_Rxx = lam_Rxx-lam_Rxx[0]
-        # Rxx = W_Rxx@np.diag(lam_Rxx)@W_Rxx.T
+    Rxx = np.cov(X_mm, rowvar=False)
     Dxx = np.zeros_like(Rxx)
     dim_accumu = 0
     for dim in dim_list:
+        if regularization == 'lwcov':
+            Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = LedoitWolf().fit(X_mm[:,dim_accumu:dim_accumu+dim]).covariance_
         Dxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim]
         dim_accumu = dim_accumu + dim
     Rxx = Rxx*np.expand_dims(np.array(rho_list), axis=0)
@@ -454,7 +448,9 @@ def cross_val_CCA(EEG, feature, L_timefilter, fold=10, n_components=5, regulariz
         corr_train[idx,:], _, V_A_train, V_B_train = cano_corr(EEG_train, conv_mtx_train, n_components=n_components, regularizaion=regularizaion, K_regu=K_regu)
         conv_mtx_test = convolution_mtx(L_timefilter, Sti_test)
         corr_test[idx,:], _, _, _ = cano_corr(EEG_test, conv_mtx_test, n_components=n_components, V_A=V_A_train, V_B=V_B_train)
-    return corr_train, corr_test
+    print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+    print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+    return corr_train, corr_test, V_A_train, V_B_train
 
 
 def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fold=10, n_components=5, regularizaion='lwcov'):
@@ -469,7 +465,9 @@ def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fold=10, n_components
         Wlist_train = GCCA_multi_modal(train_list, n_components=n_components, rhos=rhos, regularization=regularizaion)
         corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, n_components=n_components)
         corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, n_components=n_components)
-    return corr_train, corr_test
+    print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+    print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+    return corr_train, corr_test, Wlist_train
 
 
 def shuffle_block(X, t, fs):
@@ -502,7 +500,7 @@ def permutation_test(X, Y, num_test, t, fs, topK, V_A=None, V_B=None):
             corr_pvalue = [pearsonr(X_shuffled_trans[:,k], Y_shuffled_trans[:,k]) for k in range(K_regu)]
             corr_coe = np.array([corr_pvalue[k][0] for k in range(K_regu)])
         else:
-            corr_coe, _, _, _ = cano_corr(X_shuffled, conv_mtx_shuffled)
+            corr_coe, _, _, _ = cano_corr(X_shuffled, conv_mtx_shuffled, regularizaion='lwcov')
         corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:topK], axis=0)), axis=0)
     return corr_coe_topK
 
@@ -532,7 +530,26 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
     return X, fs
 
 
-def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, bads=[], eog=False):
+def EEG_normalization(data, len_seg):
+    '''
+    Normalize the EEG data.
+    Subtract data of each channel by the mean of it
+    Divide data into several segments, and for each segment, divide the data matrix by its Frobenius norm.
+    Inputs:
+    data: EEG data D x T
+    len_seg: length of the segments
+    Output:
+    normalized_data
+    '''
+    _, T = data.shape
+    n_blocks = T // len_seg + 1
+    data_blocks = np.array_split(data, n_blocks, axis=1)
+    data_zeromean = [db - np.mean(db, axis=1, keepdims=True) for db in data_blocks]
+    normalized_blocks = [db/LA.norm(db) for db in data_zeromean]
+    normalized_data = np.concatenate(tuple(normalized_blocks), axis=1)
+    return normalized_data
+
+def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, bads=[], eog=False, regression=False):
     '''
     Preprocessing of the raw signal
     Re-reference -> Highpass filter (-> downsample)
@@ -544,11 +561,13 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
     resamp_freqs: resampling frequency (if None then resampling is not needed)
     bads: list of bad channels
     eog: if contains 4 eog channels
+    regression: whether regresses eog out
     Output:
     preprocessed: preprocessed eeg
     fs: the sample frequency of the EEG signal (original or down sampled)
     '''
     raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
+    raw_lab.info['bads'] = bads
     fsEEG = raw_lab.info['sfreq']
     # If there are EOG channels, first treat them as EEG channels and do filterings and resamplings.
     if eog:
@@ -584,11 +603,17 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
     preprocessed.set_montage(montage)
     if len(bads)>0:
         # Interpolate bad channels
-        preprocessed.info['bads'] = bads
         preprocessed.interpolate_bads()
     # Re-reference
     # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
     preprocessed.set_eeg_reference(ref_channels='average') # Apply an average reference
+    if regression:
+        EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(preprocessed)
+        preprocessed = EOGweights.apply(preprocessed, copy=False)
+    # Normalize EEG data
+    eeg_channel_indices = mne.pick_types(preprocessed.info, eeg=True)
+    eegdata, _ = preprocessed[eeg_channel_indices]
+    preprocessed._data[eeg_channel_indices, :] = EEG_normalization(eegdata, 1*fs)
     return preprocessed, fs
 
 
@@ -613,7 +638,7 @@ def name_paths(eeg_path_head, feature_path_head):
     return videonames, eeg_sets_paths, feature_sets_paths
 
 
-def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow'):
+def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow', bads=[], eog=False, regression=False):
     '''
     Load the features and eeg signals of a specific dataset
     Inputs:
@@ -634,7 +659,7 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
     features_data = scipy.io.loadmat(matching[0])
     fsStim = int(features_data['fsVideo']) # fs of the video 
     features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
-    eeg_prepro, _ = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim)
+    eeg_prepro, _ = preprocessing(eeg_sets_paths[idx], HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim, bads=bads, eog=eog, regression=regression)
     # Clip data
     eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
     eeg_downsampled, times = eeg_prepro[eeg_channel_indices]
@@ -644,18 +669,18 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
         times = times[:len(features)]
         eeg_downsampled = eeg_downsampled[:,:len(features)]
     eeg_downsampled = eeg_downsampled.T
-    normalized_features = zscore(features) # normalize features
+    normalized_features = features/LA.norm(features)  # normalize features
     fs = fsStim
     # export_path = eeg_sets_paths[idx][:-4] + '.mat'
     # scipy.io.savemat(export_path, {'eeg'+videoname: eeg_downsampled.T, 'fs': fs})
     return eeg_downsampled, normalized_features, times, fs
 
 
-def concatenate_eeg_feature(videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow'):
+def concatenate_eeg_feature(videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow', bads=[], eog=False, regression=False):
     eeg_downsampled_list = []
     normalized_features_list = []
     for idx in range(len(videonames)):
-        eeg_downsampled, normalized_features, _, fs = load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type)
+        eeg_downsampled, normalized_features, _, fs = load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type, bads, eog, regression)
         eeg_downsampled_list.append(eeg_downsampled)
         normalized_features_list.append(normalized_features)
     # TODO: Do we need to normalize eeg signals when concatenating them?
@@ -704,16 +729,17 @@ def concatenate_eeg_env(audionames, eeg_sets_paths, env_sets_paths, resamp_freq=
     return eeg_concat, env_concat, times
 
 
-def multisub_data_org(subjects, video, feature_type='muFlow'):
+def multisub_data_org(subjects, video, folder='EOG', feature_type='muFlow', bads=[], eog=False, regression=False):
     feature_path = '../../Experiments/Videos/' + video + '_features.mat'
     features_data = scipy.io.loadmat(feature_path)
     fsStim = int(features_data['fsVideo']) # fs of the video 
     features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
+    features = features/LA.norm(features) # normalization
     T = features.shape[0]
     eeg_list = []
     for sub in subjects:
-        eeg_path = '../../Experiments/data/'+ sub +'/Videos/' + video + '.set'
-        eeg_prepro, fs = preprocessing(eeg_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim)
+        eeg_path = '../../Experiments/data/'+ sub +'/' + folder + '/' + video + '.set'
+        eeg_prepro, fs = preprocessing(eeg_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=fsStim, bads=bads, eog=eog, regression=regression)
         eeg_channel_indices = mne.pick_types(eeg_prepro.info, eeg=True)
         eeg_downsampled, _ = eeg_prepro[eeg_channel_indices]
         eeg_downsampled = eeg_downsampled.T
