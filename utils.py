@@ -8,6 +8,7 @@ from tqdm import tqdm
 from numpy import linalg as LA
 from scipy import signal
 from scipy.linalg import toeplitz, eig, eigh
+from scipy.sparse.linalg import eigs
 from scipy.stats import zscore, pearsonr
 from numba import jit
 
@@ -71,7 +72,7 @@ def convolution_mtx(L_timefilter, x, causal=True):
     if causal:
         conv_mtx = np.transpose(toeplitz(first_col, x))
     else:
-        assert(L_timefilter % 2 ==1)
+        assert(L_timefilter % 2 == 1)
         L = int((L_timefilter-1)/2)
         x = np.append(x, [np.zeros((1,L))])
         conv_mtx = np.transpose(toeplitz(first_col, x))
@@ -308,7 +309,13 @@ def GCCA_multi_modal(datalist, n_components, rhos, regularization='lwcov'):
     # Generalized eigenvalue decomposition
     # Dxx @ W = Rxx @ W @ np.diag(lam)
     # Dxx @ W[:,i] = lam[i] * Rxx @ W[:,i]
-    lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
+    # lam, W = eigh(Dxx, Rxx, subset_by_index=[0,n_components-1]) # automatically ascend
+    # lam, W = eigs(Dxx, n_components, Rxx, which='SR')
+    # W = np.real(W)
+    lam, W = eig(Dxx, Rxx)
+    idx = np.argsort(lam)
+    lam = lam[idx] # rank eigenvalues
+    W = np.real(W[:, idx]) # rearrange eigenvectors accordingly
     # lam also equals to np.diag(np.transpose(W)@Dxx@W)
     Wlist = W_organize(W[:,:n_components], datalist)
     return Wlist
@@ -439,7 +446,7 @@ def avg_corr_coe_multi_modal(datalist, Wlist, n_components=5, regularization=Non
     return avg_corr
 
 
-def cross_val_CCA(EEG, feature, L_timefilter, fold=10, n_components=5, regularizaion='lwcov', K_regu=None):
+def cross_val_CCA(EEG, feature, L_timefilter, fs, fold=10, n_components=5, regularizaion='lwcov', K_regu=None, message=True, signifi_level=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     for idx in range(fold):
@@ -448,12 +455,17 @@ def cross_val_CCA(EEG, feature, L_timefilter, fold=10, n_components=5, regulariz
         corr_train[idx,:], _, V_A_train, V_B_train = cano_corr(EEG_train, conv_mtx_train, n_components=n_components, regularizaion=regularizaion, K_regu=K_regu)
         conv_mtx_test = convolution_mtx(L_timefilter, Sti_test)
         corr_test[idx,:], _, _, _ = cano_corr(EEG_test, conv_mtx_test, n_components=n_components, V_A=V_A_train, V_B=V_B_train)
-    print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
-    print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+    if signifi_level:
+        corr_trials = permutation_test(EEG_test, np.squeeze(Sti_test), num_test=1000, t=0.1, fs=fs, topK=n_components, V_A=V_A_train, V_B=V_B_train)
+        corr_trials = np.sort(abs(corr_trials), axis=0)
+        print('Significance level of each component: {}'.format(corr_trials[-10,:]))
+    if message:
+        print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+        print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
     return corr_train, corr_test, V_A_train, V_B_train
 
 
-def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fold=10, n_components=5, regularizaion='lwcov'):
+def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fs, fold=10, n_components=5, regularizaion='lwcov', message=True, signifi_level=True):
     n_mod = len(datalist)
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
@@ -465,13 +477,18 @@ def cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fold=10, n_components
         Wlist_train = GCCA_multi_modal(train_list, n_components=n_components, rhos=rhos, regularization=regularizaion)
         corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, n_components=n_components)
         corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, n_components=n_components)
-    print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
-    print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+    if signifi_level:
+        corr_trials = permutation_test_multi_mod(test_list, num_test=1000, t=0.1, fs=fs, topK=n_components, Wlist=Wlist_train)
+        corr_trials = np.sort(abs(corr_trials), axis=0)
+        print('Significance level of each component: {}'.format(corr_trials[-10,:]))
+    if message:
+        print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+        print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
     return corr_train, corr_test, Wlist_train
 
 
 def shuffle_block(X, t, fs):
-    block_len = t*fs
+    block_len = int(t*fs)
     T, D, N = X.shape
     append_arr = np.zeros((block_len-T%block_len, D, N))
     X = np.concatenate((X, append_arr), axis=0)
@@ -505,6 +522,27 @@ def permutation_test(X, Y, num_test, t, fs, topK, V_A=None, V_B=None):
     return corr_coe_topK
 
 
+def permutation_test_multi_mod(datalist, num_test, t, fs, topK, Wlist):
+    corr_coe_topK = np.empty((0, topK))
+    for i in tqdm(range(num_test)):
+        datalist_shuffled = []
+        for data in datalist:
+            if np.ndim(data) == 1:
+                data_temp = np.expand_dims(data, axis=(1,2))
+                data_temp = np.squeeze(shuffle_block(data_temp, t, fs), axis=(1,2))
+                L_timefilter = fs
+                datalist_shuffled.append(convolution_mtx(L_timefilter, data_temp))
+            if np.ndim(data) == 2:
+                data_temp = np.expand_dims(data, axis=2)
+                data_temp = np.squeeze(shuffle_block(data_temp, t, fs), axis=2)
+                datalist_shuffled.append(data_temp)
+            elif np.ndim(data) == 3:
+                datalist_shuffled.append(shuffle_block(data, t, fs))
+        corr_coe = avg_corr_coe_multi_modal(datalist_shuffled, Wlist, n_components=5)
+        corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:topK], axis=0)), axis=0)
+    return corr_coe_topK
+
+
 def leave_one_fold_out(EEG, Sti, L_timefilter, K_regu=7, fold=10, fold_idx=1):
     EEG_train, EEG_test, Sti_train, Sti_test = split(EEG, Sti, fold=fold, fold_idx=fold_idx)
     conv_mtx_train = convolution_mtx(L_timefilter, Sti_train)
@@ -528,6 +566,18 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
         X.append(np.transpose(data_per_subject))
     X = np.stack(tuple(X), axis=2)
     return X, fs
+
+
+def rho_sweep(datalist, sweep_list, L_timefilter, fs, fold=10, n_components=5):
+    corr_best = -np.Inf
+    for i in sweep_list:
+        rhos = [1, 10**i]
+        _, corr_test = cross_val_GCCA_multi_mod(datalist, L_timefilter, rhos, fs, fold, n_components, regularizaion='lwcov', message=False, signifi_level=False)
+        avg_corr_test = np.average(corr_test, axis=0)
+        if avg_corr_test[0] > corr_best:
+            rhos_best = rhos
+            corr_best = avg_corr_test[0]
+    return rhos_best
 
 
 def EEG_normalization(data, len_seg):
@@ -669,25 +719,24 @@ def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, featur
         times = times[:len(features)]
         eeg_downsampled = eeg_downsampled[:,:len(features)]
     eeg_downsampled = eeg_downsampled.T
-    normalized_features = features/LA.norm(features)  # normalize features
+    # normalized_features = features/LA.norm(features)  # normalize features
     fs = fsStim
     # export_path = eeg_sets_paths[idx][:-4] + '.mat'
     # scipy.io.savemat(export_path, {'eeg'+videoname: eeg_downsampled.T, 'fs': fs})
-    return eeg_downsampled, normalized_features, times, fs
+    return eeg_downsampled, features, times, fs
 
 
 def concatenate_eeg_feature(videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow', bads=[], eog=False, regression=False):
     eeg_downsampled_list = []
-    normalized_features_list = []
+    features_list = []
     for idx in range(len(videonames)):
-        eeg_downsampled, normalized_features, _, fs = load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type, bads, eog, regression)
+        eeg_downsampled, features, _, fs = load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type, bads, eog, regression)
         eeg_downsampled_list.append(eeg_downsampled)
-        normalized_features_list.append(normalized_features)
-    # TODO: Do we need to normalize eeg signals when concatenating them?
+        features_list.append(features)
     eeg_concat = np.concatenate(eeg_downsampled_list, axis=0)
-    normalized_features_concat = np.concatenate(normalized_features_list)
-    times = np.array(range(len(normalized_features_concat)))/fs
-    return eeg_concat, normalized_features_concat, times, fs
+    features_concat = np.concatenate(features_list)
+    times = np.array(range(len(features_concat)))/fs
+    return eeg_concat, features_concat, times, fs
 
 
 def load_eeg_env(idx, audionames, eeg_sets_paths, env_sets_paths, resamp_freq=20, band=[2, 9]):
@@ -729,12 +778,13 @@ def concatenate_eeg_env(audionames, eeg_sets_paths, env_sets_paths, resamp_freq=
     return eeg_concat, env_concat, times
 
 
-def multisub_data_org(subjects, video, folder='EOG', feature_type='muFlow', bads=[], eog=False, regression=False):
-    feature_path = '../../Experiments/Videos/' + video + '_features.mat'
+def multisub_data_org(subjects, video, folder='EOG', feature_type=['muFlow'], bads=[], eog=False, regression=False):
+    feature_path = '../../Experiments/Videos/stimuli/' + video + '_features.mat'
     features_data = scipy.io.loadmat(feature_path)
     fsStim = int(features_data['fsVideo']) # fs of the video 
-    features = np.nan_to_num(features_data[feature_type]) # feature: optical flow
-    features = features/LA.norm(features) # normalization
+    features_list = [np.abs(np.nan_to_num(features_data[type])) for type in feature_type]
+    features = np.concatenate(tuple(features_list), axis=1)
+    # features = features/LA.norm(features) # Normalize here or normalize the concatenated features?
     T = features.shape[0]
     eeg_list = []
     for sub in subjects:
@@ -747,7 +797,7 @@ def multisub_data_org(subjects, video, folder='EOG', feature_type='muFlow', bads
         if eeg_downsampled.shape[0] < T:
             T = eeg_downsampled.shape[0]
     # Clip data
-    features = features[:T]
+    features = features[:T, :]
     eeg_list = [np.expand_dims(eeg[:T,:], axis=2) for eeg in eeg_list]
     eeg_multisub = np.concatenate(tuple(eeg_list), axis=2)
     times = np.array(range(T))/fs
