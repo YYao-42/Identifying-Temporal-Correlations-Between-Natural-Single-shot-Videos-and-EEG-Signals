@@ -341,9 +341,13 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
     Lam = np.diag(lam)
     Rxx = Rxx * np.expand_dims(np.array(rho_list), axis=1)
     W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rxx @ W @ Lam))
+    W = W[:,:n_components]
+    # Forward models
+    F = Dxx @ W
     # Organize weights of different modalities
-    Wlist = W_organize(W[:,:n_components], datalist, Llist)
-    return Wlist
+    Wlist = W_organize(W, datalist, Llist)
+    Flist = W_organize(F, datalist, Llist)
+    return Wlist, Flist
 
 
 def W_organize(W, datalist, Llist):
@@ -458,7 +462,7 @@ def avg_corr_coe_multi_modal(datalist, Wlist, Llist, causal_list, n_components=5
     Output:
     avg_corr: average pairwise correlation
     '''
-    if ISC:
+    if ISC and (np.ndim(datalist[0]) != 2): # calculate avg correlation across only EEG views, unless there is only one EEG subject (CCA)
         avg_corr = avg_corr_coe(datalist[0], Wlist[0], Llist[0], causal_list[0], n_components=n_components)
     else:
         avg_corr = np.zeros(n_components)
@@ -517,7 +521,7 @@ def cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold=10, n_
     corr_test = np.zeros((fold, n_components))
     for idx in range(fold):
         train_list, test_list = split_multi_mod(datalist, fold=fold, fold_idx=idx+1)
-        Wlist_train = GCCA_multi_modal(train_list, Llist, causal_list, n_components=n_components, rhos=rhos, regularization=regularization)
+        Wlist_train, Flist_train = GCCA_multi_modal(train_list, Llist, causal_list, n_components=n_components, rhos=rhos, regularization=regularization)
         corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
         corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
     if signifi_level:
@@ -527,7 +531,7 @@ def cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold=10, n_
     if message:
         print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
         print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-    return corr_train, corr_test, Wlist_train
+    return corr_train, corr_test, Wlist_train, Flist_train
 
 
 def shuffle_block(X, t, fs):
@@ -600,7 +604,7 @@ def rho_sweep(datalist, sweep_list, Llist, causal_list, fs, fold=10, n_component
     corr_best = -np.Inf
     for i in sweep_list:
         rhos = [1, 10**i]
-        _, corr_test, _ = cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False)
+        _, corr_test, _, _ = cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False)
         avg_corr_test = np.average(corr_test, axis=0)
         if message:
             print('Average ISC across different test sets when rho=10**{}: {}'.format(i, avg_corr_test))
