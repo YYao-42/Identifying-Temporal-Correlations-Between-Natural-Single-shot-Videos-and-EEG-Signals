@@ -7,7 +7,7 @@ from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
 from scipy import signal
-from scipy.linalg import toeplitz, eig, eigh
+from scipy.linalg import toeplitz, eig, eigh, sqrtm
 from scipy.sparse.linalg import eigs
 from scipy.stats import zscore, pearsonr
 from numba import jit
@@ -334,9 +334,14 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
     # W = np.real(W)
     lam, W = eig(Dxx, Rxx)
     idx = np.argsort(lam)
-    lam = lam[idx] # rank eigenvalues
+    lam = np.real(lam[idx]) # rank eigenvalues
     W = np.real(W[:, idx]) # rearrange eigenvectors accordingly
     # lam also equals to np.diag(np.transpose(W)@Dxx@W)
+    # Right scaling
+    Lam = np.diag(lam)
+    Rxx = Rxx * np.expand_dims(np.array(rho_list), axis=1)
+    W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rxx @ W @ Lam))
+    # Organize weights of different modalities
     Wlist = W_organize(W[:,:n_components], datalist, Llist)
     return Wlist
 
