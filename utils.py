@@ -88,8 +88,11 @@ def block_Hankel(X, L, causal=False):
     L: number of time lags; from -(L-1) to 0 (causal) or -(L-1)/2 to (L-1)/2 (non-causal)
     causal: default false
     '''
-    Hankel_list = [convolution_mtx(L, X[:,i], causal=causal) for i in range(X.shape[1])]
-    blockHankel = np.concatenate(tuple(Hankel_list), axis=1)
+    if L == 1:
+        blockHankel = X
+    else:
+        Hankel_list = [convolution_mtx(L, X[:,i], causal=causal) for i in range(X.shape[1])]
+        blockHankel = np.concatenate(tuple(Hankel_list), axis=1)
     return blockHankel
 
 
@@ -301,14 +304,14 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
         causal = causal_list[i]
         rho = rhos[i]
         if np.ndim(rawdata) == 3:
-            _, D, N = rawdata.shape
+            T, D, N = rawdata.shape
             X_list = [block_Hankel(rawdata[:,:,n], L, causal) for n in range(N)]
             X = np.concatenate(tuple(X_list), axis=1)
             flatten_list.append(X)
             dim_list = dim_list + [D*L]*N
             rho_list = rho_list + [rho]*(D*L*N)
         elif np.ndim(rawdata) == 2:
-            _, D = rawdata.shape
+            T, D = rawdata.shape
             flatten_list.append(block_Hankel(rawdata, L, causal))
             dim_list.append(D*L)
             rho_list = rho_list + [rho]*(D*L)
@@ -343,7 +346,7 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
     W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rxx @ W @ Lam))
     W = W[:,:n_components]
     # Forward models
-    F = Dxx @ W
+    F = T * Dxx @ W
     # Organize weights of different modalities
     Wlist = W_organize(W, datalist, Llist)
     Flist = W_organize(F, datalist, Llist)
@@ -525,7 +528,7 @@ def cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold=10, n_
         corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
         corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
     if signifi_level:
-        corr_trials = permutation_test_multi_mod(test_list, Llist, causal_list, num_test=1000, t=0.1, fs=fs, n_components=n_components, Wlist=Wlist_train, ISC=True)
+        corr_trials = permutation_test_multi_mod(test_list, Llist, causal_list, num_test=1000, t=0.1, fs=fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
         corr_trials = np.sort(abs(corr_trials), axis=0)
         print('Significance level of each component: {}'.format(corr_trials[-10,:]))
     if message:
@@ -554,7 +557,11 @@ def permutation_test(X, Y, Lx, Ly, causalx, causaly, num_test, t, fs, n_componen
     Y = np.expand_dims(Y, axis=2)
     for i in tqdm(range(num_test)):
         X_shuffled = np.squeeze(shuffle_block(X, t, fs), axis=2)
+        # X_shuffled = np.squeeze(X, axis=2)
         Y_shuffled = np.squeeze(shuffle_block(Y, t, fs), axis=2)
+        # Y_shuffled = np.squeeze(Y, axis=2)
+        # Y_shuffled = np.expand_dims(np.append(Y_shuffled, np.zeros((X_shuffled.shape[0]-len(Y_shuffled),1))), axis=1)
+        # X_shuffled = np.concatenate((X_shuffled, np.zeros((-X_shuffled.shape[0]+len(Y_shuffled),X_shuffled.shape[1]))), axis=0)
         corr_coe_topK[i,:], _, _, _ = cano_corr(X_shuffled, Y_shuffled, Lx=Lx, Ly=Ly, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A, V_B=V_B)
     return corr_coe_topK
 
@@ -665,7 +672,9 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
     # Remove power line noise
     row_notch = raw_highpass.copy().notch_filter(freqs=AC_freqs)
     # row_notch.compute_psd().plot(average=True)
-    # Resampling
+    # Resampling:
+    # Anti-aliasing has been implemented in mne.io.Raw.resample before decimation
+    # https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.resample
     if resamp_freqs is not None:
         raw_downsampled = row_notch.copy().resample(sfreq=resamp_freqs)
         # raw_downsampled.compute_psd().plot(average=True)
