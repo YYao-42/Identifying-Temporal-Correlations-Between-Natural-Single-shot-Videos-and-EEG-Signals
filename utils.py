@@ -512,7 +512,7 @@ def cross_val_CCA(EEG, feature, fs, L_EEG=1, L_feat=1, causalx=False, causaly=Tr
     if signifi_level:
         corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, t=0.1, fs=fs, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train)
         corr_trials = np.sort(abs(corr_trials), axis=0)
-        print('Significance level of each component: {}'.format(corr_trials[-10,:]))
+        print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
         print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
         print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -530,7 +530,7 @@ def cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold=10, n_
     if signifi_level:
         corr_trials = permutation_test_multi_mod(test_list, Llist, causal_list, num_test=1000, t=0.1, fs=fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
         corr_trials = np.sort(abs(corr_trials), axis=0)
-        print('Significance level of each component: {}'.format(corr_trials[-10,:]))
+        print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
         print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
         print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -607,13 +607,15 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
     return X, fs
 
 
-def rho_sweep(datalist, sweep_list, Llist, causal_list, fs, fold=10, n_components=5, message=False):
+def rho_sweep(datalist, sweep_list, Llist, causal_list, fs, fold=10, n_components=5, message=False, ISC=True):
     corr_best = -np.Inf
     for i in sweep_list:
         rhos = [1, 10**i]
-        _, corr_test, _, _ = cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False)
+        corr_train, corr_test, _, _ = cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False, ISC=ISC)
+        avg_corr_train = np.average(corr_train, axis=0)
         avg_corr_test = np.average(corr_test, axis=0)
         if message:
+            print('Average ISC across different training sets when rho=10**{}: {}'.format(i, avg_corr_train))
             print('Average ISC across different test sets when rho=10**{}: {}'.format(i, avg_corr_test))
         if avg_corr_test[0] > corr_best:
             rhos_best = rhos
@@ -640,6 +642,7 @@ def EEG_normalization(data, len_seg):
     normalized_data = np.concatenate(tuple(normalized_blocks), axis=1)
     return normalized_data
 
+
 def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, bads=[], eog=False, regression=False, normalize=True):
     '''
     Preprocessing of the raw signal
@@ -660,50 +663,52 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
     raw_lab = mne.io.read_raw_eeglab(file_path, preload=True)
     raw_lab.info['bads'] = bads
     fsEEG = raw_lab.info['sfreq']
+    # Rename channels and set montages
+    biosemi_layout = mne.channels.read_layout('biosemi')
+    ch_names_map = dict(zip(raw_lab.info['ch_names'], biosemi_layout.names))
+    raw_lab.rename_channels(ch_names_map)
+    montage = mne.channels.make_standard_montage('biosemi64')
+    raw_lab.set_montage(montage)
+    if len(bads)>0:
+        # Interpolate bad channels
+        raw_lab.interpolate_bads()
+    # Re-reference
+    # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
+    raw_lab.set_eeg_reference(ref_channels='average')
     # If there are EOG channels, first treat them as EEG channels and do filterings and resamplings.
     if eog:
         misc_names = [raw_lab.info.ch_names[i] for i in mne.pick_types(raw_lab.info, misc=True)]
+        eog_data, _ = raw_lab[misc_names]
+        eog_channel_indices = mne.pick_channels(raw_lab.info['ch_names'], include=misc_names)
         type_eeg = ['eeg']*len(misc_names)
         change_type_dict = dict(zip(misc_names, type_eeg))
         raw_lab.set_channel_types(change_type_dict)
+        raw_lab._data[eog_channel_indices, :] = eog_data - np.average(eog_data, axis=0)
     # Highpass filter - remove DC components and slow drifts
     raw_highpass = raw_lab.copy().filter(l_freq=HP_cutoff, h_freq=None)
     # raw_highpass.compute_psd().plot(average=True)
     # Remove power line noise
-    row_notch = raw_highpass.copy().notch_filter(freqs=AC_freqs)
-    # row_notch.compute_psd().plot(average=True)
-    # Resampling:
-    # Anti-aliasing has been implemented in mne.io.Raw.resample before decimation
-    # https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.resample
-    if resamp_freqs is not None:
-        raw_downsampled = row_notch.copy().resample(sfreq=resamp_freqs)
-        # raw_downsampled.compute_psd().plot(average=True)
-        preprocessed = raw_downsampled
-        fs = resamp_freqs
-    else:
-        preprocessed = row_notch
-        fs = fsEEG
+    raw_notch = raw_highpass.copy().notch_filter(freqs=AC_freqs)
+    # raw_notch.compute_psd().plot(average=True)
     # Then set EOG channels to their true type
     if eog:
         type_true = ['eog']*len(misc_names)
         change_type_dict = dict(zip(misc_names, type_true))
-        preprocessed.set_channel_types(change_type_dict)
-    # Rename channels and set montages
-    biosemi_layout = mne.channels.read_layout('biosemi')
-    ch_names_map = dict(zip(preprocessed.info['ch_names'], biosemi_layout.names))
-    preprocessed.rename_channels(ch_names_map)
-    montage = mne.channels.make_standard_montage('biosemi64')
-    preprocessed.set_montage(montage)
-    if len(bads)>0:
-        # Interpolate bad channels
-        preprocessed.interpolate_bads()
-    # Re-reference
-    # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
-    preprocessed.set_eeg_reference(ref_channels='average') # Apply an average reference
+        raw_notch.set_channel_types(change_type_dict)
     if regression:
-        EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(preprocessed)
-        preprocessed = EOGweights.apply(preprocessed, copy=False)
-    # Normalize EEG data
+        EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(raw_notch)
+        preprocessed = EOGweights.apply(raw_notch, copy=False)
+    # Resampling:
+    # Anti-aliasing has been implemented in mne.io.Raw.resample before decimation
+    # https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.resample
+    if resamp_freqs is not None:
+        raw_downsampled = raw_notch.copy().resample(sfreq=resamp_freqs)
+        # raw_downsampled.compute_psd().plot(average=True)
+        preprocessed = raw_downsampled
+        fs = resamp_freqs
+    else:
+        preprocessed = raw_notch
+        fs = fsEEG
     if normalize:
         eeg_channel_indices = mne.pick_types(preprocessed.info, eeg=True)
         eegdata, _ = preprocessed[eeg_channel_indices]
