@@ -3,6 +3,7 @@ import random
 import os
 import mne
 import scipy.io
+import matplotlib.pyplot as plt
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
@@ -673,7 +674,23 @@ def EEG_normalization(data, len_seg):
     return normalized_data
 
 
-def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, bads=[], eog=False, regression=False, normalize=True):
+def extract_highfreq(EEG, resamp_freqs, band=[15,20]):
+    '''
+    EEG signals -> band-pass filter -> high-frequency signals -> Hilbert transform -> signal envelope -> low-pass filter -> down-sampled envelope
+    Inputs:
+    EEG: EEG signals with original sampling rate
+    resamp_freqs: resampling frequency
+    band: the frequency band to be kept
+    Outputs:
+    envelope: the envelope of high-frequency signals
+    '''
+    EEG_band = EEG.filter(l_freq=band[0], h_freq=band[1], picks=['eeg'])
+    envelope = EEG_band.apply_hilbert(picks=['eeg'], envelope=True)
+    envelope = envelope.resample(sfreq=resamp_freqs)
+    return envelope
+
+
+def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, band=None, resamp_freqs=None, bads=[], eog=True, regression=True, normalize=True):
     '''
     Preprocessing of the raw signal
     Re-reference -> Highpass filter (-> downsample)
@@ -705,7 +722,7 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
     # Re-reference
     # raw_lab.set_eeg_reference(ref_channels=['Cz']) # Select the reference channel to be Cz
     raw_lab.set_eeg_reference(ref_channels='average')
-    # If there are EOG channels, first treat them as EEG channels and do filterings and resamplings.
+    # If there are EOG channels, first treat them as EEG channels and do re-referencing, filtering and resampling.
     if eog:
         misc_names = [raw_lab.info.ch_names[i] for i in mne.pick_types(raw_lab.info, misc=True)]
         eog_data, _ = raw_lab[misc_names]
@@ -713,6 +730,7 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
         type_eeg = ['eeg']*len(misc_names)
         change_type_dict = dict(zip(misc_names, type_eeg))
         raw_lab.set_channel_types(change_type_dict)
+        # Take the average of four EOG channels as the reference
         raw_lab._data[eog_channel_indices, :] = eog_data - np.average(eog_data, axis=0)
     # Highpass filter - remove DC components and slow drifts
     raw_highpass = raw_lab.copy().filter(l_freq=HP_cutoff, h_freq=None)
@@ -727,23 +745,28 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, resamp_freqs=None, ba
         raw_notch.set_channel_types(change_type_dict)
     if regression:
         EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(raw_notch)
-        preprocessed = EOGweights.apply(raw_notch, copy=False)
+        raw_notch = EOGweights.apply(raw_notch, copy=False)
     # Resampling:
     # Anti-aliasing has been implemented in mne.io.Raw.resample before decimation
     # https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.resample
     if resamp_freqs is not None:
+        if band is not None:
+            highfreq = extract_highfreq(raw_notch.copy(), resamp_freqs, band)
+        else:
+            highfreq = None
         raw_downsampled = raw_notch.copy().resample(sfreq=resamp_freqs)
         # raw_downsampled.compute_psd().plot(average=True)
         preprocessed = raw_downsampled
         fs = resamp_freqs
     else:
+        highfreq = None
         preprocessed = raw_notch
         fs = fsEEG
     if normalize:
         eeg_channel_indices = mne.pick_types(preprocessed.info, eeg=True)
         eegdata, _ = preprocessed[eeg_channel_indices]
         preprocessed._data[eeg_channel_indices, :] = EEG_normalization(eegdata, 1*fs)
-    return preprocessed, fs
+    return preprocessed, fs, highfreq
 
 
 def name_paths(eeg_path_head, feature_path_head):
