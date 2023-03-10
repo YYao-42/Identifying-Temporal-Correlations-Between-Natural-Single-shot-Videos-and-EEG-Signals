@@ -111,8 +111,27 @@ def split(EEG, Sti, fold=10, fold_idx=1):
         EEG_train = np.delete(EEG, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
     else:
         print('Warning: Check the dimension of EEG data')
-    Sti_test = Sti[len_test*(fold_idx-1):len_test*fold_idx]
+    if np.ndim(Sti)==1:
+        Sti = np.expand_dims(Sti, axis=1)
+    Sti_test = Sti[len_test*(fold_idx-1):len_test*fold_idx,:]
     Sti_train = np.delete(Sti, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
+    return EEG_train, EEG_test, Sti_train, Sti_test
+
+
+def split_balance(EEG_list, Sti_list, fold=10, fold_idx=1):
+    '''
+    For multiple videos in Sti_list and the corresponding EEG responses in EEG_list, 
+    split them as one fold specified by fold_idx (test set), and the rest folds (training set).
+    Merge the EEG responses and stimuli from different videos into one training set and one test set.
+    '''
+    split_list = [split(EEG, Sti, fold, fold_idx) for EEG, Sti in zip(EEG_list, Sti_list)]
+    EEG_train = np.concatenate(tuple([split_list[i][0] for i in range(len(split_list))]), axis=0)
+    EEG_test = np.concatenate(tuple([split_list[i][1] for i in range(len(split_list))]), axis=0)
+    Sti_train = np.concatenate(tuple([split_list[i][2] for i in range(len(split_list))]), axis=0)
+    Sti_test = np.concatenate(tuple([split_list[i][3] for i in range(len(split_list))]), axis=0)
+    if np.ndim(Sti_train)==1:
+        Sti_train = np.expand_dims(Sti_train, axis=1)
+        Sti_test = np.expand_dims(Sti_test, axis=1)
     return EEG_train, EEG_test, Sti_train, Sti_test
 
 
@@ -126,7 +145,10 @@ def split_multi_mod(datalist, fold=10, fold_idx=1):
     for data in datalist:
         T = data.shape[0]
         len_test = T // fold
-        if np.ndim(data)==2:
+        if np.ndim(data)==1:
+            data_test = np.expand_dims(data[len_test*(fold_idx-1):len_test*fold_idx], axis=1)
+            data_train = np.expand_dims(np.delete(data, range(len_test*(fold_idx-1), len_test*fold_idx)), axis=1)
+        elif np.ndim(data)==2:
             data_test = data[len_test*(fold_idx-1):len_test*fold_idx,:]
             data_train = np.delete(data, range(len_test*(fold_idx-1), len_test*fold_idx), axis=0)
         elif np.ndim(data)==3:
@@ -136,6 +158,27 @@ def split_multi_mod(datalist, fold=10, fold_idx=1):
             print('Warning: Check the dimension of data')
         train_list.append(data_train)
         test_list.append(data_test)
+    return train_list, test_list
+
+
+def split_mm_balance(nested_datalist, fold=10, fold_idx=1):
+    '''
+    Datasets are organized in nested datalist: [[EEG_1, EEG_2, ... ], [Vis_1, Vis_2, ... ], [Sd_1, Sd_2, ... ]]
+    Split using split_multi_mod for [EEG_i, Vis_i, Sd_i] for i=1,2,..., and merge the results into
+    - A traininng list: [EEG_train, Vis_train, Sd_train]
+    - A test list: [EEG_test, Vis_test, Sd_test]
+    '''
+    nb_clips = len(nested_datalist[0])
+    nb_mod = len(nested_datalist)
+    re_arrange = []
+    for i in range(nb_clips):
+       re_arrange.append([nested_datalist[j][i] for j in range(nb_mod)]) 
+    split_list = [split_multi_mod(data, fold, fold_idx) for data in re_arrange]
+    train_list = []
+    test_list = []
+    for i in range(nb_mod):
+        train_list.append(np.concatenate(tuple([split_list[j][0][i] for j in range(nb_clips)]), axis=0))
+        test_list.append(np.concatenate(tuple([split_list[j][1][i] for j in range(nb_clips)]), axis=0))
     return train_list, test_list
 
 
@@ -169,7 +212,7 @@ def corr_component(X, n_components, W_train=None):
     return ISC[:n_components], W[:,:n_components]
     
 
-def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, regularization='lwcov', K_regu=None, V_A=None, V_B=None):
+def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, regularization='lwcov', K_regu=None, V_A=None, V_B=None, Lam=None):
     '''
     Input:
     X: EEG data T(#sample)xDx(#channel)
@@ -214,8 +257,9 @@ def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, reg
         # can be used as a preliminary check for correctness
         # the correlation coefficients are already available by taking sqrt of the eigenvalues: corr_coe = np.sqrt(lam[:K_regu])
         # or we do the following to obtain transformed X and Y and calculate corr_coe from there
-        _, V_A = eig_sorted(A)
+        Lam, V_A = eig_sorted(A)
         _, V_B = eig_sorted(B)
+        Lam = np.real(Lam[:n_components])
         V_A = np.real(V_A[:,:n_components])
         V_B = np.real(V_B[:,:n_components])
     X_trans = mtx_X@V_A
@@ -228,7 +272,7 @@ def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, reg
         # to match filters v_a and v_b s.t. corr_coe is always positive
         V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
         corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
-    return corr_coe, p_value, V_A, V_B
+    return corr_coe, p_value, V_A, V_B, Lam
 
 
 def GCCA(X_stack, n_components, regularization='lwcov', W_train=None):
@@ -350,7 +394,7 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
     # Organize weights of different modalities
     Wlist = W_organize(W, datalist, Llist)
     Flist = W_organize(F, datalist, Llist)
-    return Wlist, Flist
+    return Wlist, Flist, lam[:n_components]
 
 
 def W_organize(W, datalist, Llist):
@@ -532,20 +576,21 @@ def avg_corr_coe_multi_modal(datalist, Wlist, Llist, causal_list, n_components=5
     return avg_corr
 
 
-def cross_val_CCA(EEG, feature, fs, L_EEG=1, L_feat=1, causalx=False, causaly=True, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True):
+def cross_val_CCA(EEG_list, feature_list, fs, L_EEG=1, L_feat=1, causalx=False, causaly=True, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     for idx in range(fold):
-        EEG_train, EEG_test, Sti_train, Sti_test = split(EEG, feature, fold=fold, fold_idx=idx+1)
-        corr_train[idx,:], _, V_A_train, V_B_train = cano_corr(EEG_train, Sti_train, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu)
-        corr_test[idx,:], _, _, _ = cano_corr(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train)
+        # EEG_train, EEG_test, Sti_train, Sti_test = split(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
+        EEG_train, EEG_test, Sti_train, Sti_test = split_balance(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
+        corr_train[idx,:], _, V_A_train, V_B_train, Lam = cano_corr(EEG_train, Sti_train, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu)
+        corr_test[idx,:], _, _, _, _ = cano_corr(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
     if signifi_level:
         if pool:
-            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=1, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train)
+            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=1, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
             corr_trials = np.sort(abs(corr_trials), axis=None)
             print('Significance level: {}'.format(corr_trials[-50*n_components])) # top 5%
         else:
-            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=20*fs, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train)
+            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=20*fs, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
             corr_trials = np.sort(abs(corr_trials), axis=0)
             print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
@@ -554,12 +599,13 @@ def cross_val_CCA(EEG, feature, fs, L_EEG=1, L_feat=1, causalx=False, causaly=Tr
     return corr_train, corr_test, V_A_train, V_B_train
 
 
-def cross_val_GCCA_multi_mod(datalist, Llist, causal_list, rhos, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
+def cross_val_GCCA_multi_mod(nested_datalist, Llist, causal_list, rhos, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     for idx in range(fold):
-        train_list, test_list = split_multi_mod(datalist, fold=fold, fold_idx=idx+1)
-        Wlist_train, Flist_train = GCCA_multi_modal(train_list, Llist, causal_list, n_components=n_components, rhos=rhos, regularization=regularization)
+        # train_list, test_list = split_multi_mod(datalist, fold=fold, fold_idx=idx+1)
+        train_list, test_list = split_mm_balance(nested_datalist, fold=fold, fold_idx=idx+1)
+        Wlist_train, Flist_train, _ = GCCA_multi_modal(train_list, Llist, causal_list, n_components=n_components, rhos=rhos, regularization=regularization)
         corr_train[idx,:] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
         corr_test[idx,:] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
     if signifi_level:
@@ -620,12 +666,12 @@ def shuffle_3D(X, block_len):
     return X_shuffled
 
 
-def permutation_test(X, Y, Lx, Ly, causalx, causaly, num_test, block_len, n_components, regularization, K_regu, V_A=None, V_B=None):
+def permutation_test(X, Y, Lx, Ly, causalx, causaly, num_test, block_len, n_components, regularization, K_regu, V_A, V_B, Lam):
     corr_coe_topK = np.zeros((num_test, n_components))
     for i in tqdm(range(num_test)):
         X_shuffled = shuffle_2D(X, block_len)
         Y_shuffled = shuffle_2D(Y, block_len)
-        corr_coe_topK[i,:], _, _, _ = cano_corr(X_shuffled, Y_shuffled, Lx=Lx, Ly=Ly, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A, V_B=V_B)
+        corr_coe_topK[i,:], _, _, _, _ = cano_corr(X_shuffled, Y_shuffled, Lx=Lx, Ly=Ly, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A, V_B=V_B, Lam=Lam)
     return corr_coe_topK
 
 
