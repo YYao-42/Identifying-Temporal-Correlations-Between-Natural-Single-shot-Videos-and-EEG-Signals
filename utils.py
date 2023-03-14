@@ -316,6 +316,8 @@ def GCCA(X_stack, L, causal, n_components, regularization='lwcov'):
 
 def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwcov'):
     EEG, Stim = datalist
+    if np.ndim(EEG) == 2:
+        EEG = np.expand_dims(EEG, axis=2)
     T, D_eeg, N = EEG.shape
     _, D_stim = Stim.shape
     L_EEG, L_Stim = Llist
