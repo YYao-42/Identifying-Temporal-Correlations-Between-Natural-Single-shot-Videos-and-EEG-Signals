@@ -4,6 +4,7 @@ import os
 import mne
 import scipy.io
 import matplotlib.pyplot as plt
+import copy
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
@@ -45,6 +46,17 @@ def PCAreg_inv(X, rank):
     V = V[:, :rank]
     inv = V @ np.diag(1/lam) @ np.transpose(V)
     return inv
+
+
+def To_posi_semidef(X):
+    '''
+    Transform a symmetric matrix X to a positive semidefinite matrix
+    '''
+    X = (X + X.T) / 2 # make sure X is symmetric
+    lam, V = LA.eig(X)
+    lam = lam + abs(min(lam))
+    X_semiposi_def = V @ np.diag(lam) @ LA.inv(V)
+    return X_semiposi_def
 
 
 def convolution_mtx(L_timefilter, x, causal=True):
@@ -95,6 +107,17 @@ def block_Hankel(X, L, causal=False):
         Hankel_list = [convolution_mtx(L, X[:,i], causal=causal) for i in range(X.shape[1])]
         blockHankel = np.concatenate(tuple(Hankel_list), axis=1)
     return blockHankel
+
+
+def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
+    dim = Dxx.shape[0]
+    Rxx_hat = copy.deepcopy(Rxx)
+    Rxx_hat[:, -dimStim:] = np.sqrt(rho) * Rxx_hat[:, -dimStim:]
+    Rxx_hat[-dimStim:, :] = np.sqrt(rho) * Rxx_hat[-dimStim:, :]
+    Rxx_hat = (Rxx_hat + Rxx_hat.T)/2
+    lam, W = eigh(Dxx, Rxx_hat, subset_by_index=[0,n_components-1]) # automatically ascend
+    W[-dimStim:, :] = np.sqrt(1/rho) * W[-dimStim:, :]
+    return lam, W
 
 
 def split(EEG, Sti, fold=10, fold_idx=1):
@@ -316,6 +339,8 @@ def GCCA(X_stack, L, causal, n_components, regularization='lwcov'):
 
 def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwcov'):
     EEG, Stim = datalist
+    # EEG = EEG/LA.norm(EEG)
+    # Stim = Stim/LA.norm(Stim)
     if np.ndim(EEG) == 2:
         EEG = np.expand_dims(EEG, axis=2)
     T, D_eeg, N = EEG.shape
@@ -335,15 +360,22 @@ def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwc
             Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = LedoitWolf().fit(X[:,dim_accumu:dim_accumu+dim]).covariance_
         Dxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim] = Rxx[dim_accumu:dim_accumu+dim, dim_accumu:dim_accumu+dim]
         dim_accumu = dim_accumu + dim
-    Rxx[:,-D_stim*L_Stim:] = Rxx[:,-D_stim*L_Stim:]*rho
-    lam, W = eig(Dxx, Rxx)
-    idx = np.argsort(lam)
-    lam = np.real(lam[idx]) # rank eigenvalues
-    W = np.real(W[:, idx]) # rearrange eigenvectors accordingly
-    Lam = np.diag(lam)[:n_components,:n_components]
-    Rxx[-D_stim*L_Stim:, :] = Rxx[-D_stim*L_Stim:, :]*rho
-    W = W[:,:n_components]
+    try:
+        lam, W = transformed_GEVD(Dxx, Rxx, rho, dim_list[-1], n_components)
+        Lam = np.diag(lam)
+        Rxx[:,-D_stim*L_Stim:] = Rxx[:,-D_stim*L_Stim:]*rho
+    except:
+        print("Numerical issue exists for eigh. Use eig instead.")
+        Rxx[:,-D_stim*L_Stim:] = Rxx[:,-D_stim*L_Stim:]*rho
+        lam, W = eig(Dxx, Rxx)
+        idx = np.argsort(lam)
+        lam = np.real(lam[idx]) # rank eigenvalues
+        W = np.real(W[:, idx]) # rearrange eigenvectors accordingly
+        lam = lam[:n_components]
+        Lam = np.diag(lam)
+        W = W[:,:n_components]
     # Right scaling
+    Rxx[-D_stim*L_Stim:, :] = Rxx[-D_stim*L_Stim:, :]*rho
     W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rxx @ W @ Lam))
     # Forward models
     F = T * Dxx @ W
@@ -351,7 +383,7 @@ def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwc
     Wlist = W_organize(W, datalist, Llist)
     Flist = W_organize(F, datalist, Llist)
     Fstack = F_organize(Flist[0], L_EEG, causal_EEG, avg=True)
-    return Wlist, Fstack, lam[:n_components]
+    return Wlist, Fstack, lam
 
 
 def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regularization='lwcov'):
