@@ -59,19 +59,19 @@ def To_posi_semidef(X):
     return X_semiposi_def
 
 
-def convolution_mtx(L_timefilter, x, causal=True):
+def Hankel_mtx(L_timefilter, x, offset=0):
     '''
-    Calculate the convolution matrix
+    Calculate the Hankel matrix
     Convolution: y(t)=x(t)*h(t)
     In matrix form: y=Xh E.g. time lag = 3
-    If causal,
+    If offset=0,
     h = h(0); h(1); h(2)
     X = 
     x(0)   x(-1)  x(-2)
     x(1)   x(0)   x(-1)
             ...
     x(T-1) x(T-2) x(T-3)
-    If non-causal,
+    If offset !=0, e.g., offset=1,
     h = h(-1); h(0); h(1)
     X = 
     x(1)   x(0)   x(-1)
@@ -82,29 +82,29 @@ def convolution_mtx(L_timefilter, x, causal=True):
     '''
     first_col = np.zeros(L_timefilter)
     first_col[0] = x[0]
-    if causal:
-        conv_mtx = np.transpose(toeplitz(first_col, x))
+    if offset == 0:
+        hankel_mtx = np.transpose(toeplitz(first_col, x))
     else:
-        assert(L_timefilter % 2 == 1)
-        L = int((L_timefilter-1)/2)
-        x = np.append(x, [np.zeros((1,L))])
-        conv_mtx = np.transpose(toeplitz(first_col, x))
-        conv_mtx = conv_mtx[L:,:]
-    return conv_mtx
+        x = np.append(x, [np.zeros((1,offset))])
+        hankel_mtx = np.transpose(toeplitz(first_col, x))
+        hankel_mtx = hankel_mtx[offset:,:]
+    return hankel_mtx
 
 
-def block_Hankel(X, L, causal=False):
+def block_Hankel(X, L, offset=0):
     '''
     For spatial-temporal filter, calculate the block Hankel matrix
     Inputs:
     X: T(#sample)xD(#channel)
-    L: number of time lags; from -(L-1) to 0 (causal) or -(L-1)/2 to (L-1)/2 (non-causal)
-    causal: default false
+    L: number of time lags; 
+    offset: offset of time lags; from -(L-1) to 0 (offset=0) or offset-(L-1) to offset
     '''
+    if np.ndim(X) == 1:
+        X = np.expand_dims(X, axis=1)
     if L == 1:
         blockHankel = X
     else:
-        Hankel_list = [convolution_mtx(L, X[:,i], causal=causal) for i in range(X.shape[1])]
+        Hankel_list = [Hankel_mtx(L, X[:,i], offset) for i in range(X.shape[1])]
         blockHankel = np.concatenate(tuple(Hankel_list), axis=1)
     return blockHankel
 
@@ -235,13 +235,13 @@ def corr_component(X, n_components, W_train=None):
     return ISC[:n_components], W[:,:n_components]
     
 
-def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, regularization='lwcov', K_regu=None, V_A=None, V_B=None, Lam=None):
+def cano_corr(X, Y, Lx=1, Ly=1, offsetx=0, offsety=0, n_components=5, regularization='lwcov', K_regu=None, V_A=None, V_B=None, Lam=None):
     '''
     Input:
     X: EEG data T(#sample)xDx(#channel)
     Y: Stimulus T(#sample)xDy(#feature dim)
     Lx/Ly: If use (spatial-) temporal filter, the number of taps
-    causalx/causaly: If use (spatial-) temporal filter, causal or not
+    offsetx/offsety: If use (spatial-) temporal filter, the offset of the taps
     n_components: Number of components to be returned
     regularization: Regularization of the estimated covariance matrix
     K_regu: Number of eigenvalues to be kept. Others will be set to zero. Keep all if K_regu=None
@@ -249,8 +249,8 @@ def cano_corr(X, Y, Lx=1, Ly=1, causalx=False, causaly=True, n_components=5, reg
     '''
     _, Dx = X.shape
     _, Dy = Y.shape
-    mtx_X = block_Hankel(X, Lx, causal=causalx)
-    mtx_Y = block_Hankel(Y, Ly, causal=causaly)
+    mtx_X = block_Hankel(X, Lx, offsetx)
+    mtx_Y = block_Hankel(Y, Ly, offsety)
     if V_A is not None: # Test Mode
         flag_test = True
     else: # Train mode
@@ -342,7 +342,7 @@ def Squared_Error_SIGCCA(X, W, Lam, N, DL, DL_Stim, rho):
     return sq_err
 
 
-def GCCA(X_stack, L, causal, n_components, regularization='lwcov'):
+def GCCA(X_stack, L, offset, n_components, regularization='lwcov'):
     '''
     LEGACY. USE GCCA_multi_modal INSTEAD.
     Inputs:
@@ -358,7 +358,7 @@ def GCCA(X_stack, L, causal, n_components, regularization='lwcov'):
     T, D, N = X_stack.shape
     # From [X1; X2; ... XN] to [X1 X2 ... XN]
     # each column represents a variable, while the rows contain observations
-    X_list = [block_Hankel(X_stack[:,:,n], L, causal) for n in range(N)]
+    X_list = [block_Hankel(X_stack[:,:,n], L, offset) for n in range(N)]
     X = np.concatenate(tuple(X_list), axis=1)
     Rxx = np.cov(X, rowvar=False)
     Dxx = np.zeros_like(Rxx)
@@ -377,11 +377,11 @@ def GCCA(X_stack, L, causal, n_components, regularization='lwcov'):
     W_stack = np.transpose(W_stack, [1,0,2])
     F_redun_stack = np.reshape(F_redun, (N,D*L,-1))
     F_redun_stack = np.transpose(F_redun_stack, [1,0,2])
-    F_stack = F_organize(F_redun_stack, L, causal, avg=True)
+    F_stack = F_organize(F_redun_stack, L, offset, avg=True)
     return W_stack, F_stack, lam
 
 
-def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwcov'):
+def SI_GCCA(datalist, Llist, offsetlist, n_components, rho, regularization='lwcov'):
     EEG, Stim = datalist
     # EEG = EEG/LA.norm(EEG)
     # Stim = Stim/LA.norm(Stim)
@@ -391,10 +391,10 @@ def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwc
     _, D_stim = Stim.shape
     L_EEG, L_Stim = Llist
     dim_list = [D_eeg*L_EEG]*N + [D_stim*L_Stim]
-    causal_EEG, causal_Stim = causal_list
-    EEG_list = [block_Hankel(EEG[:,:,n], L_EEG, causal_EEG) for n in range(N)]
+    offset_EEG, offset_Stim = offsetlist
+    EEG_list = [block_Hankel(EEG[:,:,n], L_EEG, offset_EEG) for n in range(N)]
     EEG_Hankel = np.concatenate(tuple(EEG_list), axis=1)
-    Stim_Hankel = block_Hankel(Stim, L_Stim, causal_Stim)
+    Stim_Hankel = block_Hankel(Stim, L_Stim, offset_Stim)
     X = np.concatenate((EEG_Hankel, Stim_Hankel), axis=1)
     Rxx = np.cov(X, rowvar=False)
     Dxx = np.zeros_like(Rxx)
@@ -426,16 +426,16 @@ def SI_GCCA(datalist, Llist, causal_list, n_components, rho, regularization='lwc
     # Organize weights of different modalities
     Wlist = W_organize(W, datalist, Llist)
     Flist = W_organize(F, datalist, Llist)
-    Fstack = F_organize(Flist[0], L_EEG, causal_EEG, avg=True)
+    Fstack = F_organize(Flist[0], L_EEG, offset_EEG, avg=True)
     return Wlist, Fstack, lam
 
 
-def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regularization='lwcov'):
+def GCCA_multi_modal(datalist, Llist, offsetlist, n_components, rhos, regularization='lwcov'):
     '''
     Inputs:
     datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
     Llist: number of taps of different modalities.
-    causal_list: causal filter or not
+    offsetlist: offset of time lags of different modalities.
     n_components: number of components
     rhos: controls the weights of different modalities; should have the same length as the datalist
     regularization: regularization method when estimating covariance matrices (Default: LedoitWolf)
@@ -448,18 +448,18 @@ def GCCA_multi_modal(datalist, Llist, causal_list, n_components, rhos, regulariz
     for i in range(len(datalist)):
         rawdata = datalist[i]
         L = Llist[i]
-        causal = causal_list[i]
+        offset = offsetlist[i]
         rho = rhos[i]
         if np.ndim(rawdata) == 3:
             T, D, N = rawdata.shape
-            X_list = [block_Hankel(rawdata[:,:,n], L, causal) for n in range(N)]
+            X_list = [block_Hankel(rawdata[:,:,n], L, offset) for n in range(N)]
             X = np.concatenate(tuple(X_list), axis=1)
             flatten_list.append(X)
             dim_list = dim_list + [D*L]*N
             rho_list = rho_list + [rho]*(D*L*N)
         elif np.ndim(rawdata) == 2:
             T, D = rawdata.shape
-            flatten_list.append(block_Hankel(rawdata, L, causal))
+            flatten_list.append(block_Hankel(rawdata, L, offset))
             dim_list.append(D*L)
             rho_list = rho_list + [rho]*(D*L)
         else:
@@ -527,7 +527,7 @@ def W_organize(W, datalist, Llist):
     return W_list
 
 
-def F_organize(F_redun, L, causal, avg=True):
+def F_organize(F_redun, L, offset, avg=True):
     '''
     Input: 
     F_redun (not list) generated by GCCA_multi_modal
@@ -539,10 +539,6 @@ def F_organize(F_redun, L, causal, avg=True):
     else:
         DL, _ = F_redun.shape
     D = int(DL/L)
-    if causal:
-        offset = 0
-    else:
-        offset = L // 2
     indices = [i*L+offset for i in range(D)]
     if np.ndim(F_redun) == 3:
         F = F_redun[indices,:,:]
@@ -553,7 +549,7 @@ def F_organize(F_redun, L, causal, avg=True):
     return F
 
 
-def forward_model(X, W_Hankel, L=1, causal=False):
+def forward_model(X, W_Hankel, L=1, offset=0):
     '''
     Reference: On the interpretation of weight vectors of linear models in multivariate neuroimaging https://www.sciencedirect.com/science/article/pii/S1053811913010914
     Backward models: Extract latent factors as functions of the observed data s(t) = W^T x(t)
@@ -572,7 +568,6 @@ def forward_model(X, W_Hankel, L=1, causal=False):
     X: observations (one subject) TxD
     W_Hankel: filters/backward models DLxK
     L: time lag (if temporal-spatial)
-    causal: causal or non-causal filter
 
     Output:
     F: forward model
@@ -581,7 +576,7 @@ def forward_model(X, W_Hankel, L=1, causal=False):
         Rxx = np.cov(X, rowvar=False)
         F = Rxx@W_Hankel@LA.inv(W_Hankel.T@Rxx@W_Hankel)
     else:
-        X_block_Hankel = block_Hankel(X, L, causal)
+        X_block_Hankel = block_Hankel(X, L, offset)
         F = X.T@X_block_Hankel@W_Hankel@LA.inv(W_Hankel.T@X_block_Hankel.T@X_block_Hankel@W_Hankel)
     return F
 
@@ -600,20 +595,19 @@ def rescale(W, Dxx):
     return W
 
 
-def avg_corr_coe(X_stack, W, L, causal, n_components=5, ChDist=True):
+def avg_corr_coe(X_stack, W, L, offset, n_components=5, ChDist=True):
     '''
     Calculate the pairwise average correlation.
     Inputs:
     X_stack: stacked (along axis 2) data of different subjects
     W: weights 1) dim(W)=2: results of correlated component analysis 2) dim(W)=3: results of GCCA
     L: number of taps (if we use spatial-temporal filter)
-    causal: whether the filter is a causal filter
     n_components: number of components
     Output:
     avg_corr: average pairwise correlation
     '''
     _, _, N = X_stack.shape
-    Hankellist = [np.expand_dims(block_Hankel(X_stack[:,:,n], L, causal), axis=2) for n in range(N)]
+    Hankellist = [np.expand_dims(block_Hankel(X_stack[:,:,n], L, offset), axis=2) for n in range(N)]
     X_stack = np.concatenate(tuple(Hankellist), axis=2)
     corr_mtx_stack = np.zeros((N,N,n_components))
     avg_corr = np.zeros(n_components)
@@ -638,20 +632,19 @@ def avg_corr_coe(X_stack, W, L, causal, n_components=5, ChDist=True):
     return avg_corr, avg_ChDist, avg_TSC
 
 
-def avg_corr_coe_multi_modal(datalist, Wlist, Llist, causal_list, n_components=5, regularization=None, ISC=True, ChDist=True):
+def avg_corr_coe_multi_modal(datalist, Wlist, Llist, offsetlist, n_components=5, regularization=None, ISC=True, ChDist=True):
     '''
     Calculate the pairwise average correlation.
     Inputs:
     datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
     Wlist: weights of different modalities (a list)
     Llist: number of taps of different modalities.
-    causal_list: causal filter or not
     n_components: number of components
     Output:
     avg_corr: average pairwise correlation
     '''
     if ISC and (np.ndim(datalist[0]) != 2): # calculate avg correlation across only EEG views, unless there is only one EEG subject (CCA)
-        avg_corr, avg_ChDist, avg_TSC = avg_corr_coe(datalist[0], Wlist[0], Llist[0], causal_list[0], n_components=n_components, ChDist=ChDist)
+        avg_corr, avg_ChDist, avg_TSC = avg_corr_coe(datalist[0], Wlist[0], Llist[0], offsetlist[0], n_components=n_components, ChDist=ChDist)
     else:
         avg_corr = np.zeros(n_components)
         corr_mtx_list = []
@@ -662,17 +655,17 @@ def avg_corr_coe_multi_modal(datalist, Wlist, Llist, causal_list, n_components=5
                 W = Wlist[i]
                 rawdata = datalist[i]
                 L = Llist[i]
-                causal = causal_list[i]
+                offset = offsetlist[i]
                 if np.ndim(W) == 3:
                     w = W[:,:,component]
                     w = np.expand_dims(w, axis=1)
-                    data_trans = [np.expand_dims(block_Hankel(rawdata[:,:,n],L,causal),axis=2) for n in range(rawdata.shape[2])]
+                    data_trans = [np.expand_dims(block_Hankel(rawdata[:,:,n],L,offset),axis=2) for n in range(rawdata.shape[2])]
                     data = np.concatenate(tuple(data_trans), axis=2)
                     X_trans = np.einsum('tdn,dln->tln', data, w)
                     X_trans = np.squeeze(X_trans, axis=1)
                 if np.ndim(W) == 2:
                     w = W[:,component]
-                    data = block_Hankel(rawdata,L,causal)
+                    data = block_Hankel(rawdata,L,offset)
                     X_trans = data@w
                     X_trans = np.expand_dims(X_trans, axis=1)
                 X_trans_list.append(X_trans)
@@ -698,7 +691,7 @@ def avg_corr_coe_multi_modal(datalist, Wlist, Llist, causal_list, n_components=5
     return avg_corr, avg_ChDist, avg_TSC
 
 
-def cross_val_CCA(EEG_list, feature_list, fs, L_EEG=1, L_feat=1, causalx=False, causaly=True, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True):
+def cross_val_CCA(EEG_list, feature_list, fs, L_EEG=1, L_feat=1, offsetx=0, offsety=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     dist_train = np.zeros((fold, 1))
@@ -706,24 +699,24 @@ def cross_val_CCA(EEG_list, feature_list, fs, L_EEG=1, L_feat=1, causalx=False, 
     for idx in range(fold):
         # EEG_train, EEG_test, Sti_train, Sti_test = split(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
         EEG_train, EEG_test, Sti_train, Sti_test = split_balance(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
-        corr_train[idx,:], dist_train[idx], _, V_A_train, V_B_train, Lam = cano_corr(EEG_train, Sti_train, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu)
-        corr_test[idx,:], dist_test[idx], _, _, _, _ = cano_corr(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
+        corr_train[idx,:], dist_train[idx], _, V_A_train, V_B_train, Lam = cano_corr(EEG_train, Sti_train, Lx=L_EEG, Ly=L_feat, offsetx=offsetx, offsety=offsety, n_components=n_components, regularization=regularization, K_regu=K_regu)
+        corr_test[idx,:], dist_test[idx], _, _, _, _ = cano_corr(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, offsetx=offsetx, offsety=offsety, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
     if signifi_level:
         if pool:
-            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=1, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
+            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, offsetx=offsetx, offsety=offsety, num_test=1000, block_len=1, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
             corr_trials = np.sort(abs(corr_trials), axis=None)
-            print('Significance level: {}'.format(corr_trials[-10*n_components])) # top 5%
+            print('Significance level: {}'.format(corr_trials[-50*n_components])) # top 5%
         else:
-            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, causalx=causalx, causaly=causaly, num_test=1000, block_len=20*fs, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
+            corr_trials = permutation_test(EEG_test, Sti_test, Lx=L_EEG, Ly=L_feat, offsetx=offsetx, offsety=offsety, num_test=1000, block_len=20*fs, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
             corr_trials = np.sort(abs(corr_trials), axis=0)
-            print('Significance level of each component: {}'.format(corr_trials[-10,:])) # top 5%
+            print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
         print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
         print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
     return corr_train, corr_test, dist_train, dist_test, V_A_train, V_B_train
 
 
-def cross_val_GCCA(nested_data, L, causal, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
+def cross_val_GCCA(nested_data, L, offset, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     tsc_train = np.zeros((fold, 1))
@@ -732,16 +725,16 @@ def cross_val_GCCA(nested_data, L, causal, fs, fold=10, n_components=5, regulari
     dist_test = np.zeros((fold, 1))
     for idx in range(fold):
         train_list, test_list = split_mm_balance([nested_data], fold=fold, fold_idx=idx+1)
-        W_train, F_train, _ = GCCA(train_list[0], L, causal, n_components=n_components, regularization=regularization)
-        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe(train_list[0], W_train, L, causal, n_components=n_components)
-        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe(test_list[0], W_train, L, causal, n_components=n_components)
+        W_train, F_train, _ = GCCA(train_list[0], L, offset, n_components=n_components, regularization=regularization)
+        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe(train_list[0], W_train, L, offset, n_components=n_components)
+        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe(test_list[0], W_train, L, offset, n_components=n_components)
     if signifi_level:
         if pool:
-            corr_trials = permutation_test_GCCA(test_list, [L], [causal], num_test=1000, block_len=1, n_components=n_components, Wlist=[W_train], ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, [L], [offset], num_test=1000, block_len=1, n_components=n_components, Wlist=[W_train], ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=None)
             print('Significance level: {}'.format(corr_trials[-50*n_components]))
         else:
-            corr_trials = permutation_test_GCCA(test_list, [L], [causal], num_test=1000, block_len=20*fs, n_components=n_components, Wlist=[W_train], ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, [L], [offset], num_test=1000, block_len=20*fs, n_components=n_components, Wlist=[W_train], ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=0)
             print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
@@ -750,7 +743,7 @@ def cross_val_GCCA(nested_data, L, causal, fs, fold=10, n_components=5, regulari
     return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, W_train, F_train
 
 
-def cross_val_SI_GCCA(nested_datalist, Llist, causal_list, rho, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
+def cross_val_SI_GCCA(nested_datalist, Llist, offsetlist, rho, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     tsc_train = np.zeros((fold, 1))
@@ -759,16 +752,16 @@ def cross_val_SI_GCCA(nested_datalist, Llist, causal_list, rho, fs, fold=10, n_c
     dist_test = np.zeros((fold, 1))
     for idx in range(fold):
         train_list, test_list = split_mm_balance(nested_datalist, fold=fold, fold_idx=idx+1)
-        Wlist_train, F_train, _ = SI_GCCA(train_list, Llist, causal_list, n_components=n_components, rho=rho, regularization=regularization)
-        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
-        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
+        Wlist_train, F_train, _ = SI_GCCA(train_list, Llist, offsetlist, n_components=n_components, rho=rho, regularization=regularization)
+        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, offsetlist, n_components=n_components, ISC=ISC)
+        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, offsetlist, n_components=n_components, ISC=ISC)
     if signifi_level:
         if pool:
-            corr_trials = permutation_test_GCCA(test_list, Llist, causal_list, num_test=1000, block_len=1, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, Llist, offsetlist, num_test=1000, block_len=1, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=None)
             print('Significance level: {}'.format(corr_trials[-50*n_components]))
         else:
-            corr_trials = permutation_test_GCCA(test_list, Llist, causal_list, num_test=1000, block_len=20*fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, Llist, offsetlist, num_test=1000, block_len=20*fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=0)
             print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
@@ -777,7 +770,7 @@ def cross_val_SI_GCCA(nested_datalist, Llist, causal_list, rho, fs, fold=10, n_c
     return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, Wlist_train, F_train
 
 
-def cross_val_GCCA_multi_mod(nested_datalist, Llist, causal_list, rhos, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
+def cross_val_GCCA_multi_mod(nested_datalist, Llist, offsetlist, rhos, fs, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, ISC=True, pool=True):
     corr_train = np.zeros((fold, n_components))
     corr_test = np.zeros((fold, n_components))
     tsc_train = np.zeros((fold, 1))
@@ -787,16 +780,16 @@ def cross_val_GCCA_multi_mod(nested_datalist, Llist, causal_list, rhos, fs, fold
     for idx in range(fold):
         # train_list, test_list = split_multi_mod(datalist, fold=fold, fold_idx=idx+1)
         train_list, test_list = split_mm_balance(nested_datalist, fold=fold, fold_idx=idx+1)
-        Wlist_train, Flist_train, _ = GCCA_multi_modal(train_list, Llist, causal_list, n_components=n_components, rhos=rhos, regularization=regularization)
-        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
-        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, causal_list, n_components=n_components, ISC=ISC)
+        Wlist_train, Flist_train, _ = GCCA_multi_modal(train_list, Llist, offsetlist, n_components=n_components, rhos=rhos, regularization=regularization)
+        corr_train[idx,:], dist_train[idx], tsc_train[idx] = avg_corr_coe_multi_modal(train_list, Wlist_train, Llist, offsetlist, n_components=n_components, ISC=ISC)
+        corr_test[idx,:], dist_test[idx], tsc_test[idx] = avg_corr_coe_multi_modal(test_list, Wlist_train, Llist, offsetlist, n_components=n_components, ISC=ISC)
     if signifi_level:
         if pool:
-            corr_trials = permutation_test_GCCA(test_list, Llist, causal_list, num_test=1000, block_len=1, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, Llist, offsetlist, num_test=1000, block_len=1, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=None)
             print('Significance level: {}'.format(corr_trials[-50*n_components]))
         else:
-            corr_trials = permutation_test_GCCA(test_list, Llist, causal_list, num_test=1000, block_len=20*fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
+            corr_trials = permutation_test_GCCA(test_list, Llist, offsetlist, num_test=1000, block_len=20*fs, n_components=n_components, Wlist=Wlist_train, ISC=ISC)
             corr_trials = np.sort(abs(corr_trials), axis=0)
             print('Significance level of each component: {}'.format(corr_trials[-50,:])) # top 5%
     if message:
@@ -848,16 +841,16 @@ def shuffle_3D(X, block_len):
     return X_shuffled
 
 
-def permutation_test(X, Y, Lx, Ly, causalx, causaly, num_test, block_len, n_components, regularization, K_regu, V_A, V_B, Lam):
+def permutation_test(X, Y, Lx, Ly, offsetx, offsety, num_test, block_len, n_components, regularization, K_regu, V_A, V_B, Lam):
     corr_coe_topK = np.zeros((num_test, n_components))
     for i in tqdm(range(num_test)):
         X_shuffled = shuffle_2D(X, block_len)
         Y_shuffled = shuffle_2D(Y, block_len)
-        corr_coe_topK[i,:], _, _, _, _, _ = cano_corr(X_shuffled, Y_shuffled, Lx=Lx, Ly=Ly, causalx=causalx, causaly=causaly, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A, V_B=V_B, Lam=Lam)
+        corr_coe_topK[i,:], _, _, _, _, _ = cano_corr(X_shuffled, Y_shuffled, Lx=Lx, Ly=Ly, offsetx=offsetx, offsety=offsety, n_components=n_components, regularization=regularization, K_regu=K_regu, V_A=V_A, V_B=V_B, Lam=Lam)
     return corr_coe_topK
 
 
-def permutation_test_GCCA(datalist, Llist, causal_list, num_test, block_len, n_components, Wlist, ISC):
+def permutation_test_GCCA(datalist, Llist, offsetlist, num_test, block_len, n_components, Wlist, ISC):
     corr_coe_topK = np.empty((0, n_components))
     for i in tqdm(range(num_test)):
         datalist_shuffled = []
@@ -866,7 +859,7 @@ def permutation_test_GCCA(datalist, Llist, causal_list, num_test, block_len, n_c
                 datalist_shuffled.append(shuffle_2D(data, block_len))
             elif np.ndim(data) == 3:
                 datalist_shuffled.append(shuffle_3D(data, block_len))
-        corr_coe, _, _ = avg_corr_coe_multi_modal(datalist_shuffled, Wlist, Llist, causal_list, n_components=n_components, ISC=ISC)
+        corr_coe, _, _ = avg_corr_coe_multi_modal(datalist_shuffled, Wlist, Llist, offsetlist, n_components=n_components, ISC=ISC)
         corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:n_components], axis=0)), axis=0)
     return corr_coe_topK
 
@@ -885,15 +878,15 @@ def data_superbowl(head, datatype='preprocessed', year='2012', view='Y1'):
     return X, fs
 
 
-def rho_sweep(nested_datalist, sweep_list, Llist, causal_list, fs, fold=10, n_components=5, message=False, ISC=True, iflist=False, compdist=True):
+def rho_sweep(nested_datalist, sweep_list, Llist, offsetlist, fs, fold=10, n_components=5, message=False, ISC=True, iflist=False, compdist=True):
     best = -np.Inf
     for i in sweep_list:
         if iflist:
             rho = [1, 10**i]
-            corr_train, corr_test, _, _, dist_train, dist_test, _, _ = cross_val_GCCA_multi_mod(nested_datalist, Llist, causal_list, rho, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False, ISC=ISC)
+            corr_train, corr_test, _, _, dist_train, dist_test, _, _ = cross_val_GCCA_multi_mod(nested_datalist, Llist, offsetlist, rho, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False, ISC=ISC)
         else:
             rho = 10**i
-            corr_train, corr_test, _, _, dist_train, dist_test, _, _ = cross_val_SI_GCCA(nested_datalist, Llist, causal_list, rho, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False, ISC=ISC)
+            corr_train, corr_test, _, _, dist_train, dist_test, _, _ = cross_val_SI_GCCA(nested_datalist, Llist, offsetlist, rho, fs, fold, n_components, regularization='lwcov', message=False, signifi_level=False, ISC=ISC)
         avg_corr_train = np.average(corr_train, axis=0)
         avg_corr_test = np.average(corr_test, axis=0)
         avg_dist_train = np.average(dist_train)
@@ -946,16 +939,17 @@ def extract_highfreq(EEG, resamp_freqs, band=[15,20], ch_eog=None, regression=Fa
     # EOG channels are marked as 'eeg' now
     # Filter both eeg and eog channels with a band-pass filter
     EEG_band = EEG.filter(l_freq=band[0], h_freq=band[1], picks=['eeg'])
+    # Extract the envelope of signals
+    envelope = EEG_band.copy().apply_hilbert(picks=['eeg'], envelope=True)
     # Mark EOG channels as 'eog'
     if ch_eog is not None:
         type_true = ['eog']*len(ch_eog)
         change_type_dict = dict(zip(ch_eog, type_true))
-        EEG_band.set_channel_types(change_type_dict)
+        envelope.set_channel_types(change_type_dict)
         # Regress out the filtered EOG signals before extracting the envelope of high-frequency signals
         if regression:
-            EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(EEG_band)
-            EEG_band = EOGweights.apply(EEG_band, copy=False)
-    envelope = EEG_band.apply_hilbert(picks=['eeg'], envelope=True)
+            EOGweights = mne.preprocessing.EOGRegression(picks='eeg', proj=False).fit(envelope)
+            envelope = EOGweights.apply(envelope, copy=False)
     envelope = envelope.resample(sfreq=resamp_freqs)
     if normalize:
         eeg_channel_indices = mne.pick_types(envelope.info, eeg=True)

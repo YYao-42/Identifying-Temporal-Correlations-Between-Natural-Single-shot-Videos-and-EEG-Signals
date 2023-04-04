@@ -9,13 +9,13 @@ import utils
 
 
 class CanonicalCorrelationAnalysis:
-    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, causal_EEG=False, causal_Stim=True, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG=0, offset_Stim=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         Stim_list: list of stimulus, each element is a T(#sample)xDy(#feature dim) array
         fs: Sampling rate
         L_EEG/L_Stim: If use (spatial-) temporal filter, the number of taps
-        causal_EEG/causal_Stim: If use (spatial-) temporal filter, causal or not
+        offset_EEG/offset_Stim: If use (spatial-) temporal filter, the offset of time lags
         n_components: Number of components to be returned
         regularization: Regularization of the estimated covariance matrix
         K_regu: Number of eigenvalues to be kept. Others will be set to zero. Keep all if K_regu=None
@@ -27,8 +27,8 @@ class CanonicalCorrelationAnalysis:
         self.fs = fs
         self.L_EEG = L_EEG
         self.L_Stim = L_Stim
-        self.causal_EEG = causal_EEG
-        self.causal_Stim = causal_Stim
+        self.offset_EEG = offset_EEG
+        self.offset_Stim = offset_Stim
         self.fold = fold
         self.n_components = n_components
         self.regularization = regularization
@@ -44,11 +44,9 @@ class CanonicalCorrelationAnalysis:
         _, Dy = Y.shape
         Lx = self.L_EEG
         Ly = self.L_Stim
-        causalx = self.causal_EEG
-        causaly = self.causal_Stim
         n_components = self.n_components
-        mtx_X = utils.block_Hankel(X, Lx, causal=causalx)
-        mtx_Y = utils.block_Hankel(Y, Ly, causal=causaly)
+        mtx_X = utils.block_Hankel(X, Lx, self.offset_EEG)
+        mtx_Y = utils.block_Hankel(Y, Ly, self.offset_Stim)
         if V_A is not None: # Test Mode
             flag_test = True
         else: # Train mode
@@ -135,12 +133,12 @@ class CanonicalCorrelationAnalysis:
 
 
 class GeneralizedCCA:
-    def __init__(self, EEG_list, fs, L, causal, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         fs: Sampling rate
         L: If use (spatial-) temporal filter, the number of taps
-        causal: If use (spatial-) temporal filter, causal or not
+        offset: If use (spatial-) temporal filter, the offset of the time lags
         fold: Number of folds for cross-validation
         n_components: Number of components to be returned
         regularization: Regularization of the estimated covariance matrix
@@ -153,7 +151,7 @@ class GeneralizedCCA:
         self.EEG_list = EEG_list
         self.fs = fs
         self.L = L
-        self.causal = causal
+        self.offset = offset
         self.fold = fold
         self.n_components = n_components
         self.regularization = regularization
@@ -176,7 +174,7 @@ class GeneralizedCCA:
         L = self.L
         # From [X1; X2; ... XN] to [X1 X2 ... XN]
         # each column represents a variable, while the rows contain observations
-        X_list = [utils.block_Hankel(X_stack[:,:,n], L, self.causal) for n in range(N)]
+        X_list = [utils.block_Hankel(X_stack[:,:,n], L, self.offset) for n in range(N)]
         X = np.concatenate(tuple(X_list), axis=1)
         Rxx = np.cov(X, rowvar=False)
         Dxx = np.zeros_like(Rxx)
@@ -195,7 +193,7 @@ class GeneralizedCCA:
         W_stack = np.transpose(W_stack, [1,0,2])
         F_redun_stack = np.reshape(F_redun, (N,D*L,-1))
         F_redun_stack = np.transpose(F_redun_stack, [1,0,2])
-        F_stack = utils.F_organize(F_redun_stack, L, self.causal, avg=True)
+        F_stack = utils.F_organize(F_redun_stack, L, self.offset, avg=True)
         return W_stack, F_stack, lam
     
     def avg_corr_coe(self, X_stack, W_stack):
@@ -211,7 +209,7 @@ class GeneralizedCCA:
         '''
         _, _, N = X_stack.shape
         n_components = self.n_components
-        Hankellist = [np.expand_dims(utils.block_Hankel(X_stack[:,:,n], self.L, self.causal), axis=2) for n in range(N)]
+        Hankellist = [np.expand_dims(utils.block_Hankel(X_stack[:,:,n], self.L, self.offset), axis=2) for n in range(N)]
         X_stack = np.concatenate(tuple(Hankellist), axis=2)
         corr_mtx_stack = np.zeros((N,N,n_components))
         avg_corr = np.zeros(n_components)
@@ -271,7 +269,7 @@ class GeneralizedCCA:
     
 
 class StimulusInformedGCCA:
-    def __init__(self, nested_datalist, fs, Llist, causal_list, fold=10, n_components=5, regularization='lwcov', message=True, ISC=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, ISC=True, pool=True, n_permu=1000, p_value=0.05):
         '''
         nested_datalist: [EEG_list, Stim_list], where
             EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
@@ -279,8 +277,8 @@ class StimulusInformedGCCA:
         fs: Sampling rate
         Llist: [L_EEG, L_Stim], where
             L_EEG/L_Stim: If use (spatial-) temporal filter, the number of taps
-        causal_list: [causal_EEG, causal_Stim], where
-            causal_EEG/causal_Stim: If use (spatial-) temporal filter, causal or not
+        offsetlist: [offset_EEG, offset_Stim], where
+            offset_EEG/offset_Stim: If use (spatial-) temporal filter, the offset of the time lags
         fold: Number of folds for cross-validation
         n_components: Number of components to be returned
         regularization: Regularization of the estimated covariance matrix
@@ -293,7 +291,7 @@ class StimulusInformedGCCA:
         self.nested_datalist = nested_datalist
         self.fs = fs
         self.Llist = Llist
-        self.causal_list = causal_list
+        self.offsetlist = offsetlist
         self.n_components = n_components
         self.fold = fold
         self.regularization = regularization
@@ -313,10 +311,10 @@ class StimulusInformedGCCA:
         _, D_stim = Stim.shape
         L_EEG, L_Stim = self.Llist
         dim_list = [D_eeg*L_EEG]*N + [D_stim*L_Stim]
-        causal_EEG, causal_Stim = self.causal_list
-        EEG_list = [utils.block_Hankel(EEG[:,:,n], L_EEG, causal_EEG) for n in range(N)]
+        offset_EEG, offset_Stim = self.offsetlist
+        EEG_list = [utils.block_Hankel(EEG[:,:,n], L_EEG, offset_EEG) for n in range(N)]
         EEG_Hankel = np.concatenate(tuple(EEG_list), axis=1)
-        Stim_Hankel = utils.block_Hankel(Stim, L_Stim, causal_Stim)
+        Stim_Hankel = utils.block_Hankel(Stim, L_Stim, offset_Stim)
         X = np.concatenate((EEG_Hankel, Stim_Hankel), axis=1)
         Rxx = np.cov(X, rowvar=False)
         Dxx = np.zeros_like(Rxx)
@@ -348,7 +346,7 @@ class StimulusInformedGCCA:
         # Organize weights of different modalities
         Wlist = utils.W_organize(W, datalist, self.Llist)
         Flist = utils.W_organize(F, datalist, self.Llist)
-        Fstack = utils.F_organize(Flist[0], L_EEG, causal_EEG, avg=True)
+        Fstack = utils.F_organize(Flist[0], L_EEG, offset_EEG, avg=True)
         return Wlist, Fstack, lam
     
     def avg_corr_coe(self, datalist, Wlist):
@@ -357,17 +355,14 @@ class StimulusInformedGCCA:
         Inputs:
         datalist: data of different modalities (a list) E.g, [EEG_stack, Stim]
         Wlist: weights of different modalities (a list)
-        Llist: number of taps of different modalities.
-        causal_list: causal filter or not
-        n_components: number of components
         Output:
         avg_corr: average pairwise correlation
         '''
         n_components = self.n_components
         Llist = self.Llist
-        causal_list = self.causal_list
+        offsetlist = self.offsetlist
         if self.ISC and (np.ndim(datalist[0]) != 2): # calculate avg correlation across only EEG views, unless there is only one EEG subject (CCA)
-            GCCA = GeneralizedCCA(datalist[0], self.fs, Llist[0], causal=causal_list[0], n_components=n_components)
+            GCCA = GeneralizedCCA(datalist[0], self.fs, Llist[0], offsetlist[0], n_components=n_components)
             avg_corr, avg_ChDist, avg_TSC = GCCA.avg_corr_coe(datalist[0], Wlist[0])
         else:
             avg_corr = np.zeros(n_components)
@@ -379,17 +374,17 @@ class StimulusInformedGCCA:
                     W = Wlist[i]
                     rawdata = datalist[i]
                     L = Llist[i]
-                    causal = causal_list[i]
+                    offset = offsetlist[i]
                     if np.ndim(W) == 3:
                         w = W[:,:,component]
                         w = np.expand_dims(w, axis=1)
-                        data_trans = [np.expand_dims(utils.block_Hankel(rawdata[:,:,n],L,causal),axis=2) for n in range(rawdata.shape[2])]
+                        data_trans = [np.expand_dims(utils.block_Hankel(rawdata[:,:,n],L,offset),axis=2) for n in range(rawdata.shape[2])]
                         data = np.concatenate(tuple(data_trans), axis=2)
                         X_trans = np.einsum('tdn,dln->tln', data, w)
                         X_trans = np.squeeze(X_trans, axis=1)
                     if np.ndim(W) == 2:
                         w = W[:,component]
-                        data = utils.block_Hankel(rawdata,L,causal)
+                        data = utils.block_Hankel(rawdata,L,offset)
                         X_trans = data@w
                         X_trans = np.expand_dims(X_trans, axis=1)
                     X_trans_list.append(X_trans)
