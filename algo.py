@@ -3,9 +3,51 @@ import copy
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
-from scipy.linalg import eig, eigh, sqrtm
+from scipy.linalg import eig, eigh, sqrtm, lstsq
 from scipy.stats import pearsonr
 import utils
+
+
+class BackwardLeastSquares:
+    def __init__(self, EEG_list, Stim_list, fs, L_EEG, offset_EEG, fold=10, message=True):
+        self.EEG_list = EEG_list
+        self.Stim_list = Stim_list
+        self.fs = fs
+        self.L_EEG = L_EEG
+        self.offset_EEG = offset_EEG
+        self.fold = fold
+        self.message = message
+
+    def decoder(self, EEG, stim, W=None):
+        '''
+        Inputs:
+        EEG: T(#sample)xD_eeg(#channel) array
+        stim: T(#sample)xD_stim(#feature dim) array
+        W: only used in test mode
+        Output:
+        W: (D_eeg*L_eeg)xD_stim(#feature dim)x array
+        '''
+        EEG_Hankel = utils.block_Hankel(EEG, self.L_EEG, self.offset_EEG)
+        if W is not None: # Test Mode
+            pass
+        else:
+            W = lstsq(EEG_Hankel, stim)[0]
+        filtered_EEG = EEG_Hankel@W
+        mse = np.mean((filtered_EEG-stim)**2)
+        return W, mse
+
+    def cross_val(self):
+        fold = self.fold
+        mse_train = np.zeros((fold, 1))
+        mse_test = np.zeros((fold, 1))
+        for idx in range(fold):
+            EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
+            W_train, mse_train[idx] = self.decoder(EEG_train, Sti_train)
+            _, mse_test[idx] = self.decoder(EEG_test, Sti_test, W=W_train)
+        if self.message:
+            print('Average mse across {} training folds: {}'.format(self.fold, np.average(mse_train)))
+            print('Average mse across {} test folds: {}'.format(self.fold, np.average(mse_test)))
+        return mse_train, mse_test, W_train
 
 
 class CanonicalCorrelationAnalysis:
@@ -40,6 +82,8 @@ class CanonicalCorrelationAnalysis:
         self.p_value = p_value
 
     def cano_corr(self, X, Y, V_A=None, V_B=None, Lam=None):
+        if np.ndim(Y) == 1:
+            Y = np.expand_dims(Y, axis=1)
         _, Dx = X.shape
         _, Dy = Y.shape
         Lx = self.L_EEG
@@ -213,7 +257,7 @@ class GeneralizedCCA:
         X_stack = np.concatenate(tuple(Hankellist), axis=2)
         corr_mtx_stack = np.zeros((N,N,n_components))
         avg_corr = np.zeros(n_components)
-        if np.ndim (W_stack) == 2:
+        if np.ndim (W_stack) == 2: # for correlated component analysis
             W_stack = np.expand_dims(W_stack, axis=1)
             W_stack = np.repeat(W_stack, N, axis=1)
         for component in range(n_components):
@@ -267,6 +311,119 @@ class GeneralizedCCA:
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
         return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, W_train, F_train
     
+
+class CorrelatedComponentAnalysis:
+    def __init__(self, EEG_list, fs, L=1, offset=0, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
+        '''
+        EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
+        fs: Sampling rate
+        L: If use (spatial-) temporal filter, the number of taps
+        offset: If use (spatial-) temporal filter, the offset of the time lags
+        fold: Number of folds for cross-validation
+        n_components: Number of components to be returned
+        regularization: Regularization of the estimated covariance matrix
+        message: If print message
+        signifi_level: If calculate significance level
+        pool: If pool the significance level of all components
+        n_permu: Number of permutations for significance level calculation
+        p_value: P-value for significance level calculation
+        '''
+        self.EEG_list = EEG_list
+        self.fs = fs
+        self.L = L
+        self.offset = offset
+        self.fold = fold
+        self.n_components = n_components
+        self.regularization = regularization
+        self.message = message
+        self.signifi_level = signifi_level
+        self.pool = pool
+        self.n_permu = n_permu
+        self.p_value = p_value
+
+    def corr_component(self, EEG, W_train=None):
+        '''
+        Input:
+        EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+        W_train: If not None, then goes to test mode.
+        Outputs:
+        ISC: inter-subject correlation defined in Parra's work, assuming w^T X_n^T X_n w is equal for all subjects
+        W: weights
+        '''
+        _, _, N = EEG.shape
+        X_list = [utils.block_Hankel(EEG[:,:,n], self.L, self.offset) for n in range(N)]
+        X = np.stack(X_list, axis=2)
+        _, D, _ = X.shape
+        Rw = np.zeros([D,D])
+        for n in range(N):
+            if self.regularization == 'lwcov':
+                Rw += LedoitWolf().fit(X[:,:,n]).covariance_
+            else:
+                Rw += np.cov(np.transpose(X[:,:,n])) # Inside np.cov: observations in the columns
+        if self.regularization == 'lwcov':
+            Rt = N**2*LedoitWolf().fit(np.average(X, axis=2)).covariance_
+        else:
+            Rt = N**2*np.cov(np.transpose(np.average(X, axis=2)))
+        Rb = (Rt - Rw)/(N-1)
+        if W_train is not None:
+            W = W_train
+            ISC = np.diag((np.transpose(W)@Rb@W)/(np.transpose(W)@Rw@W))
+        else:
+            ISC, W = eigh(Rb, Rw, subset_by_index=[D-self.n_components,D-1])
+            ISC = np.squeeze(np.fliplr(np.expand_dims(ISC, axis=0)))
+            W = np.fliplr(W)
+        return ISC, W
+
+    def forward_model(self, EEG, W):
+        '''
+        Input:
+        EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+        L: If use (spatial-) temporal filter, the number of taps
+        offset: If use (spatial-) temporal filter, the offset of the time lags
+        W: weights with shape (DL, n_components)
+        Outputs:
+        F: forward model (D, n_components)
+        '''
+        _, _, N = EEG.shape
+        X_list = [utils.block_Hankel(EEG[:,:,n], self.L, self.offset) for n in range(N)]
+        X = np.concatenate(tuple(X_list), axis=0)
+        X_transformed = X @ W
+        F_redun = (lstsq(X_transformed, X)[0]).T
+        F = utils.F_organize(F_redun, self.L, self.offset)
+        return F
+
+    def cross_val(self):
+        fold = self.fold
+        n_components = self.n_components
+        corr_train = np.zeros((fold, n_components))
+        corr_test = np.zeros((fold, n_components))
+        tsc_train = np.zeros((fold, 1))
+        tsc_test = np.zeros((fold, 1))
+        isc_train = np.zeros((fold, n_components))
+        isc_test = np.zeros((fold, n_components))
+        GCCA = GeneralizedCCA(self.EEG_list, self.fs, self.L, self.offset, n_components=self.n_components)
+        for idx in range(fold):
+            train_list, test_list = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
+            isc_train[idx,:], W_train = self.corr_component(train_list[0])
+            isc_test[idx, :], _ = self.corr_component(test_list[0], W_train)
+            corr_train[idx,:], _, tsc_train[idx] = GCCA.avg_corr_coe(train_list[0], W_train)
+            corr_test[idx,:], _, tsc_test[idx] = GCCA.avg_corr_coe(test_list[0], W_train)
+        if self.signifi_level:
+            if self.pool:
+                corr_trials = GCCA.permutation_test(test_list[0], W_train, block_len=1)
+                corr_trials = np.sort(abs(corr_trials), axis=None)
+                sig_idx = -int(self.n_permu*self.p_value*n_components)
+                print('Significance level: {}'.format(corr_trials[sig_idx]))
+            else:
+                corr_trials = GCCA.permutation_test(test_list[0], W_train, block_len=20*self.fs)
+                corr_trials = np.sort(abs(corr_trials), axis=0)
+                sig_idx = -int(self.n_permu*self.p_value)
+                print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
+        if self.message:
+            print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+            print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+        return corr_train, corr_test, tsc_train, tsc_test, isc_train, isc_test, W_train
+
 
 class StimulusInformedGCCA:
     def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, ISC=True, pool=True, n_permu=1000, p_value=0.05):
