@@ -101,7 +101,7 @@ class CanonicalCorrelationAnalysis:
         self.n_permu = n_permu
         self.p_value = p_value
 
-    def cano_corr(self, X, Y, V_A=None, V_B=None, Lam=None):
+    def fit(self, X, Y, V_A=None, V_B=None, Lam=None):
         if np.ndim(Y) == 1:
             Y = np.expand_dims(Y, axis=1)
         _, Dx = X.shape
@@ -145,6 +145,7 @@ class CanonicalCorrelationAnalysis:
             Lam = np.real(Lam[:n_components])
             V_A = np.real(V_A[:,:n_components])
             V_B = np.real(V_B[:,:n_components])
+        # mtx_X and mtx_Y should be centered according to the definition. But since we calculate the correlation coefficients, it does not matter.
         X_trans = mtx_X@V_A
         Y_trans = mtx_Y@V_B
         corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(n_components)]
@@ -164,8 +165,23 @@ class CanonicalCorrelationAnalysis:
         for i in tqdm(range(self.n_permu)):
             X_shuffled = utils.shuffle_2D(X, block_len)
             Y_shuffled = utils.shuffle_2D(Y, block_len)
-            corr_coe_topK[i,:], _, _, _, _, _, _ = self.cano_corr(X_shuffled, Y_shuffled, V_A=V_A, V_B=V_B, Lam=Lam)
+            corr_coe_topK[i,:], _, _, _, _, _, _ = self.fit(X_shuffled, Y_shuffled, V_A=V_A, V_B=V_B, Lam=Lam)
         return corr_coe_topK
+
+    def forward_model(self, X, V_A):
+        '''
+        Inputs:
+        X: observations (one subject) TxD
+        V_A: filters/backward models DLxK
+        L: time lag (if temporal-spatial)
+        Output:
+        F: forward model
+        '''
+        X_block_Hankel = utils.block_Hankel(X, self.L_EEG, self.offset_EEG)
+        Rxx = np.cov(X_block_Hankel, rowvar=False)
+        F_redun = Rxx@V_A@LA.inv(V_A.T@Rxx@V_A)
+        F = utils.F_organize(F_redun, self.L_EEG, self.offset_EEG)
+        return F
 
     def cross_val(self):
         fold = self.fold
@@ -179,8 +195,8 @@ class CanonicalCorrelationAnalysis:
         for idx in range(fold):
             # EEG_train, EEG_test, Sti_train, Sti_test = split(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
             EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
-            corr_train[idx,:], tsc_train[idx], dist_train[idx], _, V_A_train, V_B_train, Lam = self.cano_corr(EEG_train, Sti_train)
-            corr_test[idx,:], tsc_test[idx], dist_test[idx], _, _, _, _ = self.cano_corr(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
+            corr_train[idx,:], tsc_train[idx], dist_train[idx], _, V_A_train, V_B_train, Lam = self.fit(EEG_train, Sti_train)
+            corr_test[idx,:], tsc_test[idx], dist_test[idx], _, _, _, _ = self.fit(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
         if self.signifi_level:
             if self.pool:
                 corr_trials = self.permutation_test(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam, block_len=1)
@@ -227,7 +243,7 @@ class GeneralizedCCA:
         self.n_permu = n_permu
         self.p_value = p_value
 
-    def GCCA(self, X_stack):
+    def fit(self, X_stack):
         '''
         Inputs:
         X_stack: stacked (along axis 2) data of different subjects
@@ -246,7 +262,7 @@ class GeneralizedCCA:
         Rxx = np.cov(X, rowvar=False)
         Dxx = np.zeros_like(Rxx)
         for n in range(N):
-            X_center[:,n*D*L:(n+1)*D*L] -= np.mean(X_center[:,n*D*L:(n+1)*D*L], axis=0)
+            X_center[:,n*D*L:(n+1)*D*L] -= np.mean(X_center[:,n*D*L:(n+1)*D*L], axis=0, keepdims=True)
             if self.regularization == 'lwcov':
                 Rxx[n*D*L:(n+1)*D*L, n*D*L:(n+1)*D*L] = LedoitWolf().fit(X[:, n*D*L:(n+1)*D*L]).covariance_
             Dxx[n*D*L:(n+1)*D*L, n*D*L:(n+1)*D*L] = Rxx[n*D*L:(n+1)*D*L, n*D*L:(n+1)*D*L]
@@ -266,6 +282,30 @@ class GeneralizedCCA:
         F_stack = utils.F_organize(F_redun_stack, L, self.offset, avg=True)
         return W_stack, S, F_stack, lam
     
+    def forward_model(self, EEG, W_stack, S=None):
+        '''
+        Input:
+        EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+        W: weights with shape (DL, n_components)
+        S: shared subspace with shape (T, n_components); if not None, then calculate forward model from the shared subspace
+        Outputs:
+        F: forward model (D, n_components)
+        '''
+        _, _, N = EEG.shape
+        X_list = [utils.block_Hankel(EEG[:,:,n], self.L, self.offset) for n in range(N)]
+        X_list_center = [X_list[n] - np.mean(X_list[n], axis=0, keepdims=True) for n in range(N)]
+        X_stack = np.stack(X_list_center, axis=2)
+        if S is not None:
+            F_T = np.mean(np.einsum('kt, tdn -> kdn', S.T, X_stack), axis=2)
+            F_redun = F_T.T
+        else:
+            X = np.concatenate(tuple(X_list_center), axis=0)
+            X_list_trans = [X_stack[:,:,n]@W_stack[:,n,:] for n in range(N)]
+            X_transformed = np.concatenate(tuple(X_list_trans), axis=0)
+            F_redun = (lstsq(X_transformed, X)[0]).T
+        F = utils.F_organize(F_redun, self.L, self.offset)
+        return F
+
     def avg_corr_coe(self, X_stack, W_stack):
         '''
         Calculate the pairwise average correlation.
@@ -318,7 +358,7 @@ class GeneralizedCCA:
         dist_test = np.zeros((fold, 1))
         for idx in range(fold):
             train_list, test_list = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
-            W_train, _, F_train, _ = self.GCCA(train_list[0])
+            W_train, _, F_train, _ = self.fit(train_list[0])
             corr_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
             corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list[0], W_train)
         if self.signifi_level:
@@ -338,36 +378,8 @@ class GeneralizedCCA:
         return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, W_train, F_train
     
 
-class CorrelatedComponentAnalysis:
-    def __init__(self, EEG_list, fs, L=1, offset=0, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
-        '''
-        EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
-        fs: Sampling rate
-        L: If use (spatial-) temporal filter, the number of taps
-        offset: If use (spatial-) temporal filter, the offset of the time lags
-        fold: Number of folds for cross-validation
-        n_components: Number of components to be returned
-        regularization: Regularization of the estimated covariance matrix
-        message: If print message
-        signifi_level: If calculate significance level
-        pool: If pool the significance level of all components
-        n_permu: Number of permutations for significance level calculation
-        p_value: P-value for significance level calculation
-        '''
-        self.EEG_list = EEG_list
-        self.fs = fs
-        self.L = L
-        self.offset = offset
-        self.fold = fold
-        self.n_components = n_components
-        self.regularization = regularization
-        self.message = message
-        self.signifi_level = signifi_level
-        self.pool = pool
-        self.n_permu = n_permu
-        self.p_value = p_value
-
-    def corr_component(self, EEG, W_train=None):
+class CorrelatedComponentAnalysis(GeneralizedCCA):
+    def fit(self, EEG, W_train=None):
         '''
         Input:
         EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
@@ -379,11 +391,10 @@ class CorrelatedComponentAnalysis:
         T, _, N = EEG.shape
         X_list = [utils.block_Hankel(EEG[:,:,n], self.L, self.offset) for n in range(N)]
         X = np.stack(X_list, axis=2)
-        X_center = copy.deepcopy(X)
+        X_center = X - np.mean(X, axis=0, keepdims=True)
         _, D, _ = X.shape
         Rw = np.zeros([D,D])
         for n in range(N):
-            X_center[:,:,n] = X[:,:,n] - np.mean(X[:,:,n], axis=0)
             if self.regularization == 'lwcov':
                 Rw += LedoitWolf().fit(X[:,:,n]).covariance_
             else:
@@ -397,33 +408,41 @@ class CorrelatedComponentAnalysis:
             W = W_train
             ISC = np.diag((np.transpose(W)@Rb@W)/(np.transpose(W)@Rw@W))
             S = None
+            F = None
         else:
             ISC, W = eigh(Rb, Rw, subset_by_index=[D-self.n_components,D-1])
             ISC = np.squeeze(np.fliplr(np.expand_dims(ISC, axis=0)))
             W = np.fliplr(W)
             # right scaling
-            Lam = np.diag(1/(1/ISC+1))
+            Lam = np.diag(1/(ISC*(N-1)+1))
             W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rt * T @ W @ Lam))
             # shared subspace
             S = np.sum(X_center, axis=2) @ W @ Lam
-        return ISC, W, S
+            # Forward models
+            F_redun = T * Rw @ W / N
+            F = utils.F_organize(F_redun, self.L, self.offset)
+        return ISC, W, S, F
 
-    def forward_model(self, EEG, W):
+    def forward_model(self, EEG, W, S=None):
         '''
-        TODO: From shared subspace to eeg
         Input:
         EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
-        L: If use (spatial-) temporal filter, the number of taps
-        offset: If use (spatial-) temporal filter, the offset of the time lags
         W: weights with shape (DL, n_components)
+        S: shared subspace with shape (T, n_components); if not None, then calculate forward model from the shared subspace
         Outputs:
         F: forward model (D, n_components)
         '''
         _, _, N = EEG.shape
         X_list = [utils.block_Hankel(EEG[:,:,n], self.L, self.offset) for n in range(N)]
-        X = np.concatenate(tuple(X_list), axis=0)
-        X_transformed = X @ W
-        F_redun = (lstsq(X_transformed, X)[0]).T
+        X_list_center = [X_list[n] - np.mean(X_list[n], axis=0, keepdims=True) for n in range(N)]
+        if S is not None:
+            X_stack = np.stack(X_list_center, axis=2)
+            F_T = np.mean(np.einsum('kt, tdn -> kdn', S.T, X_stack), axis=2)
+            F_redun = F_T.T
+        else:
+            X = np.concatenate(tuple(X_list_center), axis=0)
+            X_transformed = X @ W
+            F_redun = (lstsq(X_transformed, X)[0]).T
         F = utils.F_organize(F_redun, self.L, self.offset)
         return F
 
@@ -436,28 +455,27 @@ class CorrelatedComponentAnalysis:
         tsc_test = np.zeros((fold, 1))
         isc_train = np.zeros((fold, n_components))
         isc_test = np.zeros((fold, n_components))
-        GCCA = GeneralizedCCA(self.EEG_list, self.fs, self.L, self.offset, n_components=self.n_components)
         for idx in range(fold):
             train_list, test_list = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
-            isc_train[idx,:], W_train, _ = self.corr_component(train_list[0])
-            isc_test[idx, :], _, _ = self.corr_component(test_list[0], W_train)
-            corr_train[idx,:], _, tsc_train[idx] = GCCA.avg_corr_coe(train_list[0], W_train)
-            corr_test[idx,:], _, tsc_test[idx] = GCCA.avg_corr_coe(test_list[0], W_train)
+            isc_train[idx,:], W_train, _, F_train = self.fit(train_list[0])
+            isc_test[idx, :], _, _, _ = self.fit(test_list[0], W_train)
+            corr_train[idx,:], _, tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
+            corr_test[idx,:], _, tsc_test[idx] = self.avg_corr_coe(test_list[0], W_train)
         if self.signifi_level:
             if self.pool:
-                corr_trials = GCCA.permutation_test(test_list[0], W_train, block_len=1)
+                corr_trials = self.permutation_test(test_list[0], W_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
                 print('Significance level: {}'.format(corr_trials[sig_idx]))
             else:
-                corr_trials = GCCA.permutation_test(test_list[0], W_train, block_len=20*self.fs)
+                corr_trials = self.permutation_test(test_list[0], W_train, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
                 sig_idx = -int(self.n_permu*self.p_value)
                 print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, tsc_train, tsc_test, isc_train, isc_test, W_train
+        return corr_train, corr_test, tsc_train, tsc_test, isc_train, isc_test, W_train, F_train
 
 
 class StimulusInformedGCCA:
@@ -493,10 +511,8 @@ class StimulusInformedGCCA:
         self.n_permu = n_permu
         self.p_value = p_value
 
-    def SI_GCCA(self, datalist, rho):
+    def fit(self, datalist, rho):
         EEG, Stim = datalist
-        # EEG = EEG/LA.norm(EEG)
-        # Stim = Stim/LA.norm(Stim)
         if np.ndim(EEG) == 2:
             EEG = np.expand_dims(EEG, axis=2)
         T, D_eeg, N = EEG.shape
@@ -548,10 +564,39 @@ class StimulusInformedGCCA:
         W_rho[-DL_Stim:,:] = W[-DL_Stim:,:]*rho
         X_center = copy.deepcopy(X)
         for n in range(N):
-            X_center[:,n*DL:(n+1)*DL] -= np.mean(X_center[:,n*DL:(n+1)*DL], axis=0)
-        X_center[:, -DL_Stim:] -= np.mean(X_center[:, -DL_Stim:], axis=0)
+            X_center[:,n*DL:(n+1)*DL] -= np.mean(X_center[:,n*DL:(n+1)*DL], axis=0, keepdims=True)
+        X_center[:, -DL_Stim:] -= np.mean(X_center[:, -DL_Stim:], axis=0, keepdims=True)
         S = X_center@W_rho@Lam
         return S
+
+    def forward_model(self, EEG, Wlist, S=None):
+        '''
+        Input:
+        EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+        Wlist: [Weeg, Wstim]
+        S: shared subspace with shape (T, n_components); if not None, then calculate forward model from the shared subspace
+        Note: if S is not None, then EEG must be the one used in the training stage. So it is equivalent to the S generated by self.fit(). This can be used as a sanity check.
+        Outputs:
+        F: forward model (D, n_components)
+        '''
+        W = Wlist[0]
+        if np.ndim(EEG) == 2:
+            EEG = np.expand_dims(EEG, axis=2)
+            W = np.expand_dims(W, axis=1)
+        _, _, N = EEG.shape
+        X_list = [utils.block_Hankel(EEG[:,:,n], self.Llist[0], self.offsetlist[0]) for n in range(N)]
+        X_list_center = [X_list[n] - np.mean(X_list[n], axis=0, keepdims=True) for n in range(N)]
+        X_stack = np.stack(X_list_center, axis=2)
+        if S is not None:
+            F_T = np.mean(np.einsum('kt, tdn -> kdn', S.T, X_stack), axis=2)
+            F_redun = F_T.T
+        else:
+            X = np.concatenate(tuple(X_list_center), axis=0)
+            X_list_trans = [X_stack[:,:,n]@W[:,n,:] for n in range(N)]
+            X_transformed = np.concatenate(tuple(X_list_trans), axis=0)
+            F_redun = (lstsq(X_transformed, X)[0]).T
+        F = utils.F_organize(F_redun, self.Llist[0], self.offsetlist[0])
+        return F
 
     def avg_corr_coe(self, datalist, Wlist):
         '''
@@ -575,7 +620,7 @@ class StimulusInformedGCCA:
             for component in range(n_components):
                 X_trans_list = []
                 for i in range(n_mod):
-                    W = Wlist[i]
+                    W = np.squeeze(Wlist[i])
                     rawdata = datalist[i]
                     L = Llist[i]
                     offset = offsetlist[i]
@@ -593,12 +638,7 @@ class StimulusInformedGCCA:
                         X_trans = np.expand_dims(X_trans, axis=1)
                     X_trans_list.append(X_trans)
                 X_trans_all = np.concatenate(tuple(X_trans_list), axis=1)
-                if self.regularization=='lwcov':
-                    cov_mtx = LedoitWolf().fit(X_trans_all).covariance_
-                    cov_diag = np.expand_dims(np.diag(cov_mtx).shape, axis = 1)
-                    corr_mtx = cov_mtx/np.sqrt(cov_diag)/np.sqrt(cov_diag.T)
-                else:
-                    corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
+                corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
                 N = X_trans_all.shape[1]
                 corr_mtx_list.append(corr_mtx)
                 avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
@@ -608,7 +648,7 @@ class StimulusInformedGCCA:
             Chordal_dist = np.sqrt(3-Squared_corr)
             avg_ChDist = np.sum(Chordal_dist)/N/(N-1)
         return avg_corr, avg_ChDist, avg_TSC
-    
+
     def rho_sweep(self, sweep_list, message=True):
         best = np.Inf
         for i in sweep_list:
@@ -649,7 +689,7 @@ class StimulusInformedGCCA:
         dist_test = np.zeros((fold, 1))
         for idx in range(fold):
             train_list, test_list = utils.split_mm_balance(self.nested_datalist, fold=fold, fold_idx=idx+1)
-            Wlist_train, _, F_train, _ = self.SI_GCCA(train_list, rho)
+            Wlist_train, _, F_train, _ = self.fit(train_list, rho)
             corr_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_corr_coe(train_list, Wlist_train)
             corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list, Wlist_train)
         if signifi_level:
@@ -667,6 +707,103 @@ class StimulusInformedGCCA:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
         return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, Wlist_train, F_train
+
+
+class StimulusInformedCorrCA(StimulusInformedGCCA):
+    def fit(self, datalist, rho):
+        EEG, Stim = datalist
+        if np.ndim(EEG) == 2:
+            EEG = np.expand_dims(EEG, axis=2)
+        T, D_eeg, N = EEG.shape
+        _, D_stim = Stim.shape
+        L_EEG, L_Stim = self.Llist
+        dim_list = [D_eeg*L_EEG] + [D_stim*L_Stim]
+        offset_EEG, offset_Stim = self.offsetlist
+        EEG_list = [utils.block_Hankel(EEG[:,:,n], L_EEG, offset_EEG) for n in range(N)]
+        EEG_Hankel = np.stack(EEG_list, axis=2)
+        EEG_center = EEG_Hankel - np.mean(EEG_Hankel, axis=0, keepdims=True)
+        Stim_Hankel = utils.block_Hankel(Stim, L_Stim, offset_Stim)
+        Stim_center = Stim_Hankel - np.mean(Stim_Hankel, axis=0, keepdims=True)
+        Rxx = np.zeros((dim_list[0]+dim_list[1], dim_list[0]+dim_list[1]))
+        Rw = np.zeros((dim_list[0], dim_list[0]))
+        for n in range(N):
+            if self.regularization == 'lwcov':
+                cov_eeg = LedoitWolf().fit(EEG_Hankel[:,:,n]).covariance_
+            else:
+                cov_eeg = np.cov(np.transpose(EEG_Hankel[:,:,n]))
+            Rw += cov_eeg
+            cov_es = EEG_center[:,:,n].T @ Stim_center / T
+            Rxx[0:dim_list[0], dim_list[0]:] += cov_es
+            Rxx[dim_list[0]:, 0:dim_list[0]] += cov_es.T
+        if self.regularization == 'lwcov':
+            Rt = N**2*LedoitWolf().fit(np.average(EEG_Hankel, axis=2)).covariance_
+            cov_stim = LedoitWolf().fit(Stim_Hankel).covariance_
+        else:
+            Rt = N**2*np.cov(np.transpose(np.average(EEG_Hankel, axis=2)))
+            cov_stim = np.cov(np.transpose(Stim_Hankel))
+        Rxx[0:dim_list[0], 0:dim_list[0]] = Rt
+        Rxx[dim_list[0]:, dim_list[0]:] = cov_stim
+        Dxx = np.zeros_like(Rxx)
+        Dxx[0:dim_list[0], 0:dim_list[0]] = Rw
+        Dxx[dim_list[0]:, dim_list[0]:] = cov_stim
+        try:
+            lam, W = utils.transformed_GEVD(Dxx, Rxx, rho, dim_list[-1], self.n_components)
+            Lam = np.diag(lam)
+            Rxx[:,dim_list[0]:] = Rxx[:,dim_list[0]:]*rho
+        except:
+            print("Numerical issue exists for eigh. Use eig instead.")
+            Rxx[:,dim_list[0]:] = Rxx[:,dim_list[0]:]*rho
+            lam, W = eig(Dxx, Rxx)
+            idx = np.argsort(lam)
+            lam = np.real(lam[idx]) # rank eigenvalues
+            W = np.real(W[:, idx]) # rearrange eigenvectors accordingly
+            lam = lam[:self.n_components]
+            Lam = np.diag(lam)
+            W = W[:,:self.n_components]
+        # Right scaling
+        Rxx[-D_stim*L_Stim:, :] = Rxx[-D_stim*L_Stim:, :]*rho
+        W = W @ sqrtm(LA.inv(Lam.T @ W.T @ Rxx * T @ W @ Lam))
+        Weeg = W[0:dim_list[0],:]
+        Weeg_expand = np.repeat(np.expand_dims(Weeg, axis=1), N, axis=1)
+        Wstim = W[dim_list[0]:,:]
+        # Forward models
+        F_redun = T * Dxx @ W / N
+        F = utils.F_organize(F_redun[0:dim_list[0],:], L_EEG, offset_EEG)
+        # Shared subspace
+        S = self.shared_subspace(EEG_center, Stim_center, Weeg, Wstim, Lam, rho)
+        Wlist = [Weeg_expand, Wstim]
+        return Wlist, S, F, lam
+
+    def shared_subspace(self, EEG_center, Stim_center, Weeg, Wstim, Lam, rho):
+        S = (np.sum(np.einsum('tdn,dk->tkn', EEG_center, Weeg), axis=2) + rho*Stim_center@Wstim) @ Lam
+        return S
+
+    def forward_model(self, EEG, Wlist, S=None):
+        '''
+        Input:
+        EEG: EEG data with shape (T, D, N) [T: # sample, D: # channel, N: # subjects]
+        Wlist: [Weeg_expand, Wstim]
+        S: shared subspace with shape (T, n_components); if not None, then calculate forward model from the shared subspace
+        Note: if S is not None, then EEG must be the one used in the training stage. So it is equivalent to the S generated by self.fit(). This can be used as a sanity check.
+        Outputs:
+        F: forward model (D, n_components)
+        '''
+        if np.ndim(EEG) == 2:
+            EEG = np.expand_dims(EEG, axis=2)
+        W = Wlist[0][:,0,:]
+        _, _, N = EEG.shape
+        X_list = [utils.block_Hankel(EEG[:,:,n], self.Llist[0], self.offsetlist[0]) for n in range(N)]
+        X_list_center = [X_list[n] - np.mean(X_list[n], axis=0, keepdims=True) for n in range(N)]
+        if S is not None:
+            X_stack = np.stack(X_list_center, axis=2)
+            F_T = np.mean(np.einsum('kt, tdn -> kdn', S.T, X_stack), axis=2)
+            F_redun = F_T.T
+        else:
+            X = np.concatenate(tuple(X_list_center), axis=0)
+            X_transformed = X @ W
+            F_redun = (lstsq(X_transformed, X)[0]).T
+        F = utils.F_organize(F_redun, self.Llist[0], self.offsetlist[0])
+        return F
 
 
 class LSGCCA:
@@ -723,13 +860,12 @@ class LSGCCA:
             # obtain the shared subspace and the filters for each subjects by GCCA/corrCA
             if self.corrca:
                 CorrCA = CorrelatedComponentAnalysis(self.EEG_list, self.fs, self.L_EEG, self.offset_EEG, n_components=n_components, regularization=self.regularization)
-                _, We_train, S = CorrCA.corr_component(train_list[0])
-                F_train = CorrCA.forward_model(train_list[0], We_train)
+                _, We_train, S, F_train = CorrCA.fit(train_list[0])
                 We_train = np.expand_dims(We_train, axis=1)
                 We_train = np.repeat(We_train, train_list[0].shape[2], axis=1)
             else:
                 GCCA = GeneralizedCCA(self.EEG_list, self.fs,self.L_EEG, self.offset_EEG, n_components=n_components, regularization=self.regularization)
-                We_train, S, F_train, _ = GCCA.GCCA(train_list[0])
+                We_train, S, F_train, _ = GCCA.fit(train_list[0])
             # obtain the stimulus filters by least square regression
             LS = LeastSquares(self.EEG_list, self.Stim_list, self.fs, L_Stim=self.L_Stim, offset_Stim=self.offset_Stim)
             Ws_train, _ = LS.encoder(S, train_list[1])
