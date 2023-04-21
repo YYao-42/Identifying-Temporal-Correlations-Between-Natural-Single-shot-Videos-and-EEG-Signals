@@ -632,7 +632,7 @@ def avg_corr_coe(X_stack, W, L, offset, n_components=5, ChDist=True):
     return avg_corr, avg_ChDist, avg_TSC
 
 
-def avg_corr_coe_multi_modal(datalist, Wlist, Llist, offsetlist, n_components=5, regularization=None, ISC=True, ChDist=True):
+def avg_corr_coe_multi_modal(datalist, Wlist, Llist, offsetlist, n_components=5, ISC=True, ChDist=True):
     '''
     Calculate the pairwise average correlation.
     Inputs:
@@ -670,12 +670,7 @@ def avg_corr_coe_multi_modal(datalist, Wlist, Llist, offsetlist, n_components=5,
                     X_trans = np.expand_dims(X_trans, axis=1)
                 X_trans_list.append(X_trans)
             X_trans_all = np.concatenate(tuple(X_trans_list), axis=1)
-            if regularization=='lwcov':
-                cov_mtx = LedoitWolf().fit(X_trans_all).covariance_
-                cov_diag = np.expand_dims(np.diag(cov_mtx).shape, axis = 1)
-                corr_mtx = cov_mtx/np.sqrt(cov_diag)/np.sqrt(cov_diag.T)
-            else:
-                corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
+            corr_mtx = np.corrcoef(X_trans_all, rowvar=False)
             N = X_trans_all.shape[1]
             corr_mtx_list.append(corr_mtx)
             avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
