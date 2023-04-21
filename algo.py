@@ -46,6 +46,7 @@ class LeastSquares:
         Output:
         W_f: (D_stim*L_stim)xD_eeg array
         '''
+        self.n_components = EEG.shape[1] # in case functions in other classes call this function and the EEG is different from the one in the initialization
         Stim_Hankel = utils.block_Hankel(Stim, self.L_Stim, self.offset_Stim)
         if W_f is not None: # Test Mode
             pass
@@ -66,6 +67,9 @@ class LeastSquares:
         Output:
         W_b: (D_eeg*L_eeg)xD_stim array
         '''
+        if np.ndim(Stim) == 1:
+            Stim = np.expand_dims(Stim, axis=1)
+        self.n_components = Stim.shape[1] # in case functions in other classes call this function and the Stim is different from the one in the initialization
         EEG_Hankel = utils.block_Hankel(EEG, self.L_EEG, self.offset_EEG)
         if W_b is not None: # Test Mode
             pass
@@ -883,43 +887,54 @@ class LSGCCA:
         corr_pvalue = [pearsonr(filtered_EEG[:,k], filtered_Stim[:,k]) for k in range(self.n_components)]
         corr_coe = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         p_value = np.array([corr_pvalue[k][1] for k in range(self.n_components)])
-        TSC = np.sum(np.square(corr_coe[:2]))
-        ChDist = np.sqrt(2-TSC)
-        return corr_coe, p_value, TSC, ChDist 
+        return corr_coe, p_value
 
     def permutation_test(self, EEG, Stim, We, Ws, block_len):
         corr_coe_topK = np.zeros((self.n_permu, self.n_components))
         for i in tqdm(range(self.n_permu)):
             EEG_shuffled = utils.shuffle_2D(EEG, block_len)
             Stim_shuffled = utils.shuffle_2D(Stim, block_len)
-            corr_coe_topK[i,:], _, _, _= self.correlation(EEG_shuffled, Stim_shuffled, We, Ws)
+            corr_coe_topK[i,:], _, = self.correlation(EEG_shuffled, Stim_shuffled, We, Ws)
         return corr_coe_topK
+
+    def to_latent_space(self):
+        self.nested_train = []
+        self.nested_test = []
+        self.nested_We_train = []
+        self.nested_S = []
+        self.nested_F_train = []
+        for idx in range(self.fold):
+            train_list, test_list = utils.split_mm_balance([self.EEG_list, self.Stim_list], fold=self.fold, fold_idx=idx+1)
+            if self.corrca:
+                CorrCA = CorrelatedComponentAnalysis(self.EEG_list, self.fs, self.L_EEG, self.offset_EEG, n_components=self.n_components, regularization=self.regularization)
+                _, We_train, S, F_train = CorrCA.fit(train_list[0])
+                We_train = np.expand_dims(We_train, axis=1)
+                We_train = np.repeat(We_train, train_list[0].shape[2], axis=1)
+            else:
+                GCCA = GeneralizedCCA(self.EEG_list, self.fs,self.L_EEG, self.offset_EEG, n_components=self.n_components, regularization=self.regularization)
+                We_train, S, F_train, _ = GCCA.fit(train_list[0])
+            self.nested_train.append(train_list)
+            self.nested_test.append(test_list)
+            self.nested_We_train.append(We_train)
+            self.nested_S.append(S)
+            self.nested_F_train.append(F_train)
 
     def cross_val(self):
         fold = self.fold
         n_components = self.n_components
         corr_train = np.zeros((fold, n_components))
         corr_test = np.zeros((fold, n_components))
-        tsc_train = np.zeros((fold, 1))
-        tsc_test = np.zeros((fold, 1))
-        dist_train = np.zeros((fold, 1))
-        dist_test = np.zeros((fold, 1))
         for idx in range(fold):
-            train_list, test_list = utils.split_mm_balance([self.EEG_list, self.Stim_list], fold=fold, fold_idx=idx+1)
-            # obtain the shared subspace and the filters for each subjects by GCCA/corrCA
-            if self.corrca:
-                CorrCA = CorrelatedComponentAnalysis(self.EEG_list, self.fs, self.L_EEG, self.offset_EEG, n_components=n_components, regularization=self.regularization)
-                _, We_train, S, F_train = CorrCA.fit(train_list[0])
-                We_train = np.expand_dims(We_train, axis=1)
-                We_train = np.repeat(We_train, train_list[0].shape[2], axis=1)
-            else:
-                GCCA = GeneralizedCCA(self.EEG_list, self.fs,self.L_EEG, self.offset_EEG, n_components=n_components, regularization=self.regularization)
-                We_train, S, F_train, _ = GCCA.fit(train_list[0])
+            train_list = self.nested_train[idx]
+            test_list = self.nested_test[idx]
+            We_train = self.nested_We_train[idx]
+            S = self.nested_S[idx]
+            F_train = self.nested_F_train[idx]
             # obtain the stimulus filters by least square regression
-            LS = LeastSquares(self.EEG_list, self.Stim_list, self.fs, L_Stim=self.L_Stim, offset_Stim=self.offset_Stim)
-            Ws_train, _ = LS.encoder(S, train_list[1])
-            corr_train[idx,:], _, tsc_train[idx], dist_train[idx] = self.correlation(train_list[0][:,:,self.id_sub], train_list[1], We_train[:,self.id_sub,:], Ws_train)
-            corr_test[idx,:], _, tsc_test[idx], dist_test[idx] = self.correlation(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train)
+            LS = LeastSquares(self.EEG_list, self.Stim_list, self.fs, decoding=False, L_Stim=self.L_Stim, offset_Stim=self.offset_Stim)
+            Ws_train, _, _ = LS.encoder(S, train_list[1])
+            corr_train[idx,:], _ = self.correlation(train_list[0][:,:,self.id_sub], train_list[1], We_train[:,self.id_sub,:], Ws_train)
+            corr_test[idx,:], _ = self.correlation(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train)
         if self.signifi_level:
             if self.pool:
                 corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=1)
@@ -927,11 +942,11 @@ class LSGCCA:
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
                 print('Significance level: {}'.format(corr_trials[sig_idx]))
             else:
-                corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=20*self.fs)
+                corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
                 sig_idx = -int(self.n_permu*self.p_value)
                 print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
         if self.message:
             print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, We_train, Ws_train, F_train
+        return corr_train, corr_test, We_train, Ws_train, F_train
