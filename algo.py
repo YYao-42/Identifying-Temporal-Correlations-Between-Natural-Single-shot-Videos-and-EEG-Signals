@@ -9,16 +9,33 @@ import utils
 
 
 class LeastSquares:
-    def __init__(self, EEG_list, Stim_list, fs, L_EEG=1, offset_EEG=0, L_Stim=1, offset_Stim=0, fold=10, message=True):
+    '''
+    Note:
+    When working with a forward model, the encoder maps the stimuli (or the latent variables) to the EEG data. We need to take more past samples of the stimuli into account. Therefore the offset should be zero or a small number to compensate for the possible misalignment.
+    When working with a backward model, the decoder maps the EEG data (or the latent variables) to the stimuli. We need to take more future samples of the EEG data into account. Therefore the offset should be L-1 or a slightly smaller number than L-1. 
+    '''
+    def __init__(self, EEG_list, Stim_list, fs, decoding, L_EEG=1, offset_EEG=0, L_Stim=1, offset_Stim=0, fold=10, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
         self.EEG_list = EEG_list
         self.Stim_list = Stim_list
         self.fs = fs
+        self.decoding = decoding
         self.L_EEG = L_EEG
         self.offset_EEG = offset_EEG
         self.L_Stim = L_Stim
         self.offset_Stim = offset_Stim
         self.fold = fold
         self.message = message
+        self.signifi_level = signifi_level
+        self.pool = pool
+        self.n_permu = n_permu
+        self.p_value = p_value
+        if decoding:
+            if np.ndim(Stim_list[0]) == 1:
+                self.n_components = 1
+            else:
+                self.n_components = Stim_list[0].shape[1]
+        else:
+            self.n_components = EEG_list[0].shape[1]
 
     def encoder(self, EEG, Stim, W_f=None):
         '''
@@ -29,14 +46,16 @@ class LeastSquares:
         Output:
         W_f: (D_stim*L_stim)xD_eeg array
         '''
-        Stim_Hankel = utils.block_Hankel(Stim, self.L_Stim, self.offset_EEG)
+        Stim_Hankel = utils.block_Hankel(Stim, self.L_Stim, self.offset_Stim)
         if W_f is not None: # Test Mode
             pass
         else:
             W_f = lstsq(Stim_Hankel, EEG)[0]
         filtered_Stim = Stim_Hankel@W_f
         mse = np.mean((filtered_Stim-EEG)**2)
-        return W_f, mse
+        corr_pvalue = [pearsonr(EEG[:,k], filtered_Stim[:,k]) for k in range(self.n_components)]
+        corr = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
+        return W_f, mse, corr
 
     def decoder(self, EEG, Stim, W_b=None):
         '''
@@ -54,20 +73,50 @@ class LeastSquares:
             W_b = lstsq(EEG_Hankel, Stim)[0]
         filtered_EEG = EEG_Hankel@W_b
         mse = np.mean((filtered_EEG-Stim)**2)
-        return W_b, mse
+        corr_pvalue = [pearsonr(filtered_EEG[:,k], Stim[:,k]) for k in range(self.n_components)]
+        corr = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
+        return W_b, mse, corr
 
-    # def cross_val(self):
-    #     fold = self.fold
-    #     mse_train = np.zeros((fold, 1))
-    #     mse_test = np.zeros((fold, 1))
-    #     for idx in range(fold):
-    #         EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
-    #         W_train, mse_train[idx] = self.decoder(EEG_train, Sti_train)
-    #         _, mse_test[idx] = self.decoder(EEG_test, Sti_test, W=W_train)
-    #     if self.message:
-    #         print('Average mse across {} training folds: {}'.format(self.fold, np.average(mse_train)))
-    #         print('Average mse across {} test folds: {}'.format(self.fold, np.average(mse_test)))
-    #     return mse_train, mse_test, W_train
+    def permutation_test(self, X, Y, W_fb, block_len):
+        corr_coe_topK = np.zeros((self.n_permu, self.n_components))
+        for i in tqdm(range(self.n_permu)):
+            X_shuffled = utils.shuffle_2D(X, block_len)
+            Y_shuffled = utils.shuffle_2D(Y, block_len)
+            if self.decoding:
+                _, _, corr_coe_topK[i,:] = self.decoder(X_shuffled, Y_shuffled, W_b=W_fb)
+            else:
+                _, _, corr_coe_topK[i,:] = self.encoder(X_shuffled, Y_shuffled, W_f=W_fb)
+        return corr_coe_topK
+
+    def cross_val(self):
+        fold = self.fold
+        mse_train = np.zeros((fold, self.n_components))
+        mse_test = np.zeros((fold, self.n_components))
+        corr_train = np.zeros((fold, self.n_components))
+        corr_test = np.zeros((fold, self.n_components))
+        for idx in range(fold):
+            EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
+            if self.decoding:
+                W_train, mse_train[idx,:], corr_train[idx,:] = self.decoder(EEG_train, Sti_train)
+                _, mse_test[idx,:], corr_test[idx,:] = self.decoder(EEG_test, Sti_test, W_b=W_train)
+            else:
+                W_train, mse_train[idx,:], corr_train[idx,:] = self.encoder(EEG_train, Sti_train)
+                _, mse_test[idx], corr_test[idx] = self.encoder(EEG_test, Sti_test, W_f=W_train)
+        if self.signifi_level:
+            if self.pool:
+                corr_trials = self.permutation_test(EEG_test, Sti_test, W_fb=W_train, block_len=1)
+                corr_trials = np.sort(abs(corr_trials), axis=None)
+                sig_idx = -int(self.n_permu*self.p_value*self.n_components)
+                print('Significance level: {}'.format(corr_trials[sig_idx]))
+            else:
+                corr_trials = self.permutation_test(EEG_test, Sti_test, W_fb=W_train, block_len=1)
+                corr_trials = np.sort(abs(corr_trials), axis=0)
+                sig_idx = -int(self.n_permu*self.p_value)
+                print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
+        if self.message:
+            print('Average correlation across {} training folds: {}'.format(self.fold, np.average(corr_train, axis=0)))
+            print('Average correlation across {} test folds: {}'.format(self.fold, np.average(corr_test, axis=0)))
+        return mse_train, mse_test, corr_train, corr_test, W_train
 
 
 class CanonicalCorrelationAnalysis:
