@@ -109,14 +109,28 @@ def block_Hankel(X, L, offset=0):
     return blockHankel
 
 
+def random_combination(iterable, r):
+    "Random selection from itertools.combinations(iterable, r)"
+    pool = tuple(iterable)
+    n = len(pool)
+    indices = sorted(random.sample(range(n), r))
+    return [pool[i] for i in indices]
+
+
 def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
-    dim = Dxx.shape[0]
     Rxx_hat = copy.deepcopy(Rxx)
     Rxx_hat[:, -dimStim:] = np.sqrt(rho) * Rxx_hat[:, -dimStim:]
     Rxx_hat[-dimStim:, :] = np.sqrt(rho) * Rxx_hat[-dimStim:, :]
     Rxx_hat = (Rxx_hat + Rxx_hat.T)/2
     lam, W = eigh(Dxx, Rxx_hat, subset_by_index=[0,n_components-1]) # automatically ascend
     W[-dimStim:, :] = np.sqrt(1/rho) * W[-dimStim:, :]
+    # Alternatively:
+    # Rxx_hat = copy.deepcopy(Rxx)
+    # Rxx_hat[:,-D_stim*L_Stim:] = Rxx_hat[:,-D_stim*L_Stim:]*rho
+    # Rxx_hat[-D_stim*L_Stim:,:] = Rxx_hat[-D_stim*L_Stim:,:]*rho
+    # Dxx_hat = copy.deepcopy(Dxx)
+    # Dxx_hat[:,-D_stim*L_Stim:] = Dxx_hat[:,-D_stim*L_Stim:]*rho
+    # lam, W = eigh(Dxx_hat, Rxx_hat, subset_by_index=[0,self.n_components-1])
     return lam, W
 
 
@@ -199,10 +213,14 @@ def split_mm_balance(nested_datalist, fold=10, fold_idx=1):
     split_list = [split_multi_mod(data, fold, fold_idx) for data in re_arrange]
     train_list = []
     test_list = []
+    nested_train = []
+    nested_test = []
     for i in range(nb_mod):
         train_list.append(np.concatenate(tuple([split_list[j][0][i] for j in range(nb_clips)]), axis=0))
         test_list.append(np.concatenate(tuple([split_list[j][1][i] for j in range(nb_clips)]), axis=0))
-    return train_list, test_list
+        nested_train.append([split_list[j][0][i] for j in range(nb_clips)])
+        nested_test.append([split_list[j][1][i] for j in range(nb_clips)])
+    return train_list, test_list, nested_train, nested_test
 
 
 def corr_component(X, n_components, W_train=None):

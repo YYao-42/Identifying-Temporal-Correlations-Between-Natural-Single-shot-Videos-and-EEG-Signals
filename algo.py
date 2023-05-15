@@ -410,7 +410,7 @@ class GeneralizedCCA:
         dist_train = np.zeros((fold, 1))
         dist_test = np.zeros((fold, 1))
         for idx in range(fold):
-            train_list, test_list = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
+            train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
             W_train, _, F_train, _ = self.fit(train_list[0])
             corr_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
             corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list[0], W_train)
@@ -509,7 +509,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
         isc_train = np.zeros((fold, n_components))
         isc_test = np.zeros((fold, n_components))
         for idx in range(fold):
-            train_list, test_list = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
+            train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
             isc_train[idx,:], W_train, _, F_train = self.fit(train_list[0])
             isc_test[idx, :], _, _, _ = self.fit(test_list[0], W_train)
             corr_train[idx,:], _, tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
@@ -532,7 +532,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
 
 
 class StimulusInformedGCCA:
-    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, ISC=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
         '''
         nested_datalist: [EEG_list, Stim_list], where
             EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
@@ -559,7 +559,9 @@ class StimulusInformedGCCA:
         self.fold = fold
         self.regularization = regularization
         self.message = message
+        self.sweep_list = sweep_list
         self.ISC = ISC
+        self.signifi_level = signifi_level
         self.pool = pool
         self.n_permu = n_permu
         self.p_value = p_value
@@ -702,24 +704,27 @@ class StimulusInformedGCCA:
             avg_ChDist = np.sum(Chordal_dist)/N/(N-1)
         return avg_corr, avg_ChDist, avg_TSC
 
-    def rho_sweep(self, sweep_list, message=True):
-        best = np.Inf
-        for i in sweep_list:
+    def rho_sweep(self):
+        train_list, _, nested_train, nested_test = utils.split_mm_balance(self.nested_datalist, fold=5, fold_idx=5)
+        _, val_list, nested_test_, _ = utils.split_mm_balance(nested_test, fold=5, fold_idx=5)   
+        best = 0
+        for i in self.sweep_list:
             rho = 10**i
-            _, _, _, _, dist_train, dist_test, _, _ = self.cross_val(rho, signifi_level=False)
-            avg_dist_train = np.average(dist_train)
-            avg_dist_test = np.average(dist_test)
-            if message:
-                print('Average ISD across different training sets when rho=10**{}: {}'.format(i, avg_dist_train))
-                print('Average ISD across different test sets when rho=10**{}: {}'.format(i, avg_dist_test))
-            if avg_dist_test < best:
+            Wlist_train, _, _, _ = self.fit(train_list, rho)
+            _, _, tsc_test = self.avg_corr_coe(val_list, Wlist_train)
+            if tsc_test > best:
                 rho_best = rho
-                best = avg_dist_test
-        return rho_best
+                best = tsc_test
+        # merge train set and unused test set together
+        nested_update = []
+        for i in range(len(self.nested_datalist)):
+            nested_update.append([np.concatenate((train, test), axis=0) for train, test in zip(nested_train[i], nested_test_[i])])
+        return rho_best, nested_update
 
     def permutation_test(self, datalist, Wlist, block_len):
         n_components = self.n_components
         corr_coe_topK = np.empty((0, n_components))
+        tsc_vec = np.empty(1)
         for i in tqdm(range(self.n_permu)):
             datalist_shuffled = []
             for data in datalist:
@@ -727,11 +732,12 @@ class StimulusInformedGCCA:
                     datalist_shuffled.append(utils.shuffle_2D(data, block_len))
                 elif np.ndim(data) == 3:
                     datalist_shuffled.append(utils.shuffle_3D(data, block_len))
-            corr_coe, _, _ = self.avg_corr_coe(datalist_shuffled, Wlist)
+            corr_coe, _, tsc = self.avg_corr_coe(datalist_shuffled, Wlist)
             corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:n_components], axis=0)), axis=0)
-        return corr_coe_topK
+            tsc_vec = np.append(tsc_vec, np.array([tsc]))
+        return corr_coe_topK, tsc_vec
 
-    def cross_val(self, rho, signifi_level=True):
+    def cross_val(self, rho=None):
         n_components = self.n_components
         fold = self.fold
         corr_train = np.zeros((fold, n_components))
@@ -740,26 +746,33 @@ class StimulusInformedGCCA:
         tsc_test = np.zeros((fold, 1))
         dist_train = np.zeros((fold, 1))
         dist_test = np.zeros((fold, 1))
+        if rho is None:
+            rho, nested_update = self.rho_sweep()
+        else:
+            nested_update = self.nested_datalist
         for idx in range(fold):
-            train_list, test_list = utils.split_mm_balance(self.nested_datalist, fold=fold, fold_idx=idx+1)
+            train_list, test_list, _, _ = utils.split_mm_balance(nested_update, fold=fold, fold_idx=idx+1)
             Wlist_train, _, F_train, _ = self.fit(train_list, rho)
             corr_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_corr_coe(train_list, Wlist_train)
             corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list, Wlist_train)
-        if signifi_level:
+        if self.signifi_level:
             if self.pool:
-                corr_trials = self.permutation_test(test_list, Wlist_train, block_len=1)
+                corr_trials, tsc_trials = self.permutation_test(test_list, Wlist_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
+                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
-                print('Significance level: {}'.format(corr_trials[sig_idx]))
+                print('Significance level: ISC={}, TSC={}'.format(corr_trials[sig_idx], tsc_trials[-int(self.n_permu*self.p_value)]))
             else:
-                corr_trials = self.permutation_test(test_list, Wlist_train, block_len=20*self.fs)
+                corr_trials, tsc_trials = self.permutation_test(test_list, Wlist_train, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
+                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
+                print('Significance level: ISCs={}, TSC={}'.format(corr_trials[sig_idx,:], tsc_trials[sig_idx]))
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, Wlist_train, F_train
+            print('Average TSC on the test sets: {}'.format(np.average(tsc_test)))
+        return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, Wlist_train, F_train, rho
 
 
 class StimulusInformedCorrCA(StimulusInformedGCCA):
@@ -904,7 +917,7 @@ class LSGCCA:
         self.nested_S = []
         self.nested_F_train = []
         for idx in range(self.fold):
-            train_list, test_list = utils.split_mm_balance([self.EEG_list, self.Stim_list], fold=self.fold, fold_idx=idx+1)
+            train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list, self.Stim_list], fold=self.fold, fold_idx=idx+1)
             if self.corrca:
                 CorrCA = CorrelatedComponentAnalysis(self.EEG_list, self.fs, self.L_EEG, self.offset_EEG, n_components=self.n_components, regularization=self.regularization)
                 _, We_train, S, F_train = CorrCA.fit(train_list[0])
