@@ -134,6 +134,21 @@ def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
     return lam, W
 
 
+def into_trials(data, fs, t=60):
+    T = data.shape[0]
+    # if T is not a multiple of t sec, then discard the last few samples
+    T_trunc = T - T%(fs*t)
+    if np.ndim(data)==2:
+        data_intmin = data[:T_trunc,:]
+    elif np.ndim(data)==3:
+        data_intmin = data[:T_trunc,:,:]
+    else:
+        raise ValueError('data should be 2D or 3D')
+    # segment X_intmin into 1 min trials along axis 0
+    data_trials = np.split(data_intmin, int(T/(fs*t)), axis=0)
+    return data_trials
+
+
 def split(EEG, Sti, fold=10, fold_idx=1):
     '''
     Split datasets as one fold specified by fold_idx (test set), and the rest folds (training set). 
@@ -202,8 +217,10 @@ def split_mm_balance(nested_datalist, fold=10, fold_idx=1):
     '''
     Datasets are organized in nested datalist: [[EEG_1, EEG_2, ... ], [Vis_1, Vis_2, ... ], [Sd_1, Sd_2, ... ]]
     Split using split_multi_mod for [EEG_i, Vis_i, Sd_i] for i=1,2,..., and merge the results into
-    - A traininng list: [EEG_train, Vis_train, Sd_train]
+    - A training list: [EEG_train, Vis_train, Sd_train]
     - A test list: [EEG_test, Vis_test, Sd_test]
+    - A nested training test: [[EEG_1_train, EEG_2_train, ...], [Vis_1_train, Vis_2_train, ...], [Sd_1_train, Sd_2_train, ...]]
+    - A nested test list: [[EEG_1_test, EEG_2_test, ...], [Vis_1_test, Vis_2_test, ...], [Sd_1_test, Sd_2_test, ...]]
     '''
     nb_clips = len(nested_datalist[0])
     nb_mod = len(nested_datalist)
@@ -854,6 +871,19 @@ def shuffle_3D(X, block_len):
     return X_shuffled
 
 
+def shuffle_datalist(datalist, block_len):
+    '''
+    Shuffle the blocks of X along the time axis for each subject.
+    '''
+    datalist_shuffled = []
+    for data in datalist:
+        if np.ndim(data) == 2:
+            datalist_shuffled.append(shuffle_2D(data, block_len))
+        elif np.ndim(data) == 3:
+            datalist_shuffled.append(shuffle_3D(data, block_len))
+    return datalist_shuffled
+
+
 def permutation_test(X, Y, Lx, Ly, offsetx, offsety, num_test, block_len, n_components, regularization, K_regu, V_A, V_B, Lam):
     corr_coe_topK = np.zeros((num_test, n_components))
     for i in tqdm(range(num_test)):
@@ -1071,6 +1101,21 @@ def name_paths(eeg_path_head, feature_path_head):
     feature_sets_paths = [feature_path_head+i for i in feature_sets]
     videonames = [i[:-4] for i in eeg_sets]
     return videonames, eeg_sets_paths, feature_sets_paths
+
+
+def plot_spatial_resp(forward_model, corr, file_name):
+    _, n_components = forward_model.shape
+    biosemi_layout = mne.channels.read_layout('biosemi')
+    create_info = mne.create_info(biosemi_layout.names, ch_types='eeg', sfreq=30)
+    create_info.set_montage('biosemi64')
+    # plt.close()
+    plt.figure(figsize=(10, 10))
+    for i in range(n_components):
+        ax = plt.subplot(1, n_components, i + 1)
+        mne.viz.plot_topomap(np.abs(forward_model[:,i]), create_info, ch_type='eeg', axes=ax, show=False)
+        ax.set_title("CC: {order}\n corr: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
+    # plt.show()
+    plt.savefig('figures/'+file_name+'.png')
 
 
 def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow', bads=[], eog=False, regression=False):
