@@ -1082,6 +1082,25 @@ def preprocessing(file_path, HP_cutoff = 0.5, AC_freqs=50, band=None, resamp_fre
     return preprocessed, fs, highfreq
 
 
+def clean_features(feats, smooth=True):
+    y = copy.deepcopy(feats)
+    T, nb_feature = y.shape
+    for i in range(nb_feature):
+        # interpolate NaN values (linearly)
+        nans, x= np.isnan(y[:,i]), lambda z: z.nonzero()[0]
+        if any(nans):
+            f1 = scipy.interpolate.interp1d(x(~nans), y[:,i][~nans], fill_value='extrapolate')
+            y[:,i][nans] = f1(x(nans))
+        if smooth:
+            # extract envelope by finding peaks and interpolating peaks with spline
+            idx_peaks = scipy.signal.find_peaks(y[:,i])[0]
+            idx_rest = np.setdiff1d(np.array(range(T)), idx_peaks)
+            # consider use quadratic instead
+            f2 = scipy.interpolate.interp1d(idx_peaks, y[:,i][idx_peaks], kind='cubic', fill_value='extrapolate')
+            y[:,i][idx_rest] = f2(idx_rest)
+    return y
+
+
 def name_paths(eeg_path_head, feature_path_head):
     '''
     Find the name of the videos and the paths of the corresponding eeg signals and features
@@ -1103,19 +1122,25 @@ def name_paths(eeg_path_head, feature_path_head):
     return videonames, eeg_sets_paths, feature_sets_paths
 
 
-def plot_spatial_resp(forward_model, corr, file_name):
+def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 5)):
     _, n_components = forward_model.shape
     biosemi_layout = mne.channels.read_layout('biosemi')
     create_info = mne.create_info(biosemi_layout.names, ch_types='eeg', sfreq=30)
     create_info.set_montage('biosemi64')
-    # plt.close()
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=fig_size)
     for i in range(n_components):
-        ax = plt.subplot(1, n_components, i + 1)
+        if n_components < 5:
+            n_row = 1
+            n_column = n_components
+        else:
+            n_row = n_components//5
+            n_column = 5
+        ax = plt.subplot(n_row, n_column, i + 1)
         mne.viz.plot_topomap(np.abs(forward_model[:,i]), create_info, ch_type='eeg', axes=ax, show=False)
         ax.set_title("CC: {order}\n corr: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
-    # plt.show()
-    plt.savefig('figures/'+file_name+'.png')
+    plt.tight_layout()
+    plt.savefig(file_name, dpi=1200)
+    plt.close()
 
 
 def load_eeg_feature(idx, videonames, eeg_sets_paths, feature_sets_paths, feature_type='muFlow', bads=[], eog=False, regression=False):

@@ -263,6 +263,8 @@ class CanonicalCorrelationAnalysis:
                 sig_idx = -int(self.n_permu*self.p_value)
                 sig_corr = corr_trials[sig_idx,:]
                 print('Significance level of each component: {}'.format(sig_corr))
+        else:
+            sig_corr = None
         if self.message:
             print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -944,7 +946,7 @@ class StimulusInformedCorrCA(StimulusInformedGCCA):
 
 
 class LSGCCA:
-    def __init__(self, EEG_list, Stim_list, fs, L_EEG, offset_EEG, L_Stim, offset_Stim, id_sub, corrca=False, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG, offset_Stim, id_sub, corrca=False, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
         self.EEG_list = EEG_list
         self.Stim_list = Stim_list
         self.fs = fs
@@ -1024,13 +1026,17 @@ class LSGCCA:
                 corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
-                print('Significance level: {}'.format(corr_trials[sig_idx]))
+                sig_corr = corr_trials[sig_idx]
+                print('Significance level: {}'.format(sig_corr))
             else:
                 corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
                 sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
+                sig_corr = corr_trials[sig_idx,:]
+                print('Significance level of each component: {}'.format(sig_corr))
+        else:
+            sig_corr = None
         if self.message:
             print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, We_train, Ws_train, F_train
+        return corr_train, corr_test, sig_corr, We_train, Ws_train, F_train
