@@ -124,7 +124,7 @@ class LeastSquares:
 
 
 class CanonicalCorrelationAnalysis:
-    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG=0, offset_Stim=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05):
+    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG=0, offset_Stim=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         Stim_list: list of stimulus, each element is a T(#sample)xDy(#feature dim) array
@@ -153,6 +153,7 @@ class CanonicalCorrelationAnalysis:
         self.pool = pool
         self.n_permu = n_permu
         self.p_value = p_value
+        self.trials = trials
 
     def fit(self, X, Y, V_A=None, V_B=None, Lam=None):
         if np.ndim(Y) == 1:
@@ -178,7 +179,7 @@ class CanonicalCorrelationAnalysis:
                 Ry = covXY[Dx*Lx:Dx*Lx+Dy*Ly,Dx*Lx:Dx*Lx+Dy*Ly]
             Rxy = covXY[:Dx*Lx,Dx*Lx:Dx*Lx+Dy*Ly]
             Ryx = covXY[Dx*Lx:Dx*Lx+Dy*Ly,:Dx*Lx]
-            # PCA regularization is recommended (set K_regu<rank(Rx))
+            # PCA regularization (set K_regu<rank(Rx))
             # such that the small eigenvalues dominated by noise are discarded
             if self.K_regu is None:
                 invRx = utils.PCAreg_inv(Rx, LA.matrix_rank(Rx))
@@ -213,12 +214,39 @@ class CanonicalCorrelationAnalysis:
         ChDist = np.sqrt(2-TSC)
         return corr_coe, TSC, ChDist, p_value, V_A, V_B, Lam
 
+    def cal_corr_coe(self, X, Y, V_A, V_B):
+        mtx_X = utils.block_Hankel(X, self.L_EEG, self.offset_EEG)
+        mtx_Y = utils.block_Hankel(Y, self.L_Stim, self.offset_Stim)
+        X_trans = mtx_X@V_A
+        Y_trans = mtx_Y@V_B
+        corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(self.n_components)]
+        corr_coe = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
+        p_value = np.array([corr_pvalue[k][1] for k in range(self.n_components)])
+        TSC = np.sum(np.square(corr_coe[:2]))
+        ChDist = np.sqrt(2-TSC)
+        return corr_coe, TSC, ChDist, p_value
+
+    def cal_corr_coe_trials(self, X_trials, Y_trials, V_A, V_B):
+        stats = [(self.cal_corr_coe(X, Y, V_A, V_B)) for X, Y in zip(X_trials, Y_trials)]
+        corr_coe = np.concatenate(tuple([np.expand_dims(stats[i][0],axis=0) for i in range(len(X_trials))]), axis=0).mean(axis=0)
+        TSC = np.array([stats[i][1] for i in range(len(X_trials))]).mean()
+        ChDist = np.array([stats[i][2] for i in range(len(X_trials))]).mean()
+        return corr_coe, TSC, ChDist
+
     def permutation_test(self, X, Y, V_A, V_B, Lam, block_len):
         corr_coe_topK = np.zeros((self.n_permu, self.n_components))
         for i in tqdm(range(self.n_permu)):
             X_shuffled = utils.shuffle_2D(X, block_len)
             Y_shuffled = utils.shuffle_2D(Y, block_len)
             corr_coe_topK[i,:], _, _, _, _, _, _ = self.fit(X_shuffled, Y_shuffled, V_A=V_A, V_B=V_B, Lam=Lam)
+        return corr_coe_topK
+
+    def permutation_test_trials(self, X_trials, Y_trials, V_A, V_B, block_len):
+        corr_coe_topK = np.empty((0, self.n_components))
+        for i in tqdm(range(self.n_permu)):
+            X_shuffled_trials = [utils.shuffle_2D(X, block_len) for X in X_trials]
+            corr_coe, _, _ = self.cal_corr_coe_trials(X_shuffled_trials, Y_trials, V_A, V_B)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:self.n_components], axis=0)), axis=0)
         return corr_coe_topK
 
     def forward_model(self, X, V_A):
@@ -249,16 +277,27 @@ class CanonicalCorrelationAnalysis:
             # EEG_train, EEG_test, Sti_train, Sti_test = split(EEG_list, feature_list, fold=fold, fold_idx=idx+1)
             EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
             corr_train[idx,:], tsc_train[idx], dist_train[idx], _, V_A_train, V_B_train, Lam = self.fit(EEG_train, Sti_train)
-            corr_test[idx,:], tsc_test[idx], dist_test[idx], _, _, _, _ = self.fit(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
+            if self.trials:
+                EEG_trials = utils.into_trials(EEG_test, self.fs)
+                Sti_trials = utils.into_trials(Sti_test, self.fs)
+                corr_test[idx,:], tsc_test[idx], dist_test[idx] = self.cal_corr_coe_trials(EEG_trials, Sti_trials, V_A_train, V_B_train)
+            else:
+                corr_test[idx,:], tsc_test[idx], dist_test[idx], _, _, _, _ = self.fit(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam)
         if self.signifi_level:
             if self.pool:
-                corr_trials = self.permutation_test(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam, block_len=1)
+                if self.trials:
+                    corr_trials = self.permutation_test_trials(EEG_trials, Sti_trials, V_A=V_A_train, V_B=V_B_train, block_len=1)
+                else:
+                    corr_trials = self.permutation_test(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
                 sig_corr = corr_trials[sig_idx]
                 print('Significance level: {}'.format(sig_corr))
             else:
-                corr_trials = self.permutation_test(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam, block_len=20*self.fs)
+                if self.trials:
+                    corr_trials = self.permutation_test_trials(EEG_trials, Sti_trials, V_A=V_A_train, V_B=V_B_train, block_len=20*self.fs)
+                else:
+                    corr_trials = self.permutation_test(EEG_test, Sti_test, V_A=V_A_train, V_B=V_B_train, Lam=Lam, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
                 sig_idx = -int(self.n_permu*self.p_value)
                 sig_corr = corr_trials[sig_idx,:]

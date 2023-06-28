@@ -135,6 +135,8 @@ def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
 
 
 def into_trials(data, fs, t=60):
+    if np.ndim(data)==1:
+        data = np.expand_dims(data, axis=1)
     T = data.shape[0]
     # if T is not a multiple of t sec, then discard the last few samples
     T_trunc = T - T%(fs*t)
@@ -143,7 +145,7 @@ def into_trials(data, fs, t=60):
     elif np.ndim(data)==3:
         data_intmin = data[:T_trunc,:,:]
     else:
-        raise ValueError('data should be 2D or 3D')
+        raise ValueError('Wrong Dimension')
     # segment X_intmin into 1 min trials along axis 0
     data_trials = np.split(data_intmin, int(T/(fs*t)), axis=0)
     return data_trials
