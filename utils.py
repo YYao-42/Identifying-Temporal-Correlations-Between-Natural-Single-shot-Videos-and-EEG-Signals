@@ -242,6 +242,27 @@ def split_mm_balance(nested_datalist, fold=10, fold_idx=1):
     return train_list, test_list, nested_train, nested_test
 
 
+def eval_mm(res_per_fold, component=1):
+    nb_folds = len(res_per_fold)
+    nb_trials = res_per_fold[0].shape[0]
+    nb_tests = nb_trials*(nb_trials-1)*nb_folds
+    match_stim_err = 0
+    match_eeg_err = 0
+    for idx in range(nb_folds):
+        if component is not None:
+            mtx_eeg_stim = res_per_fold[idx][:,:,component-1]
+        else:
+            mtx_eeg_stim = res_per_fold[idx]
+        match_stim_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=1)
+        match_eeg_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=0)
+        # count the number of elements that are greater than 0
+        match_stim_err += np.sum(match_stim_mtx > 0)
+        match_eeg_err += np.sum(match_eeg_mtx > 0)
+    match_stim_err /= nb_tests
+    match_eeg_err /= nb_tests
+    return match_stim_err, match_eeg_err
+
+
 def corr_component(X, n_components, W_train=None):
     '''
     Inputs:

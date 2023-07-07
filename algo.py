@@ -309,6 +309,25 @@ class CanonicalCorrelationAnalysis:
             print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
         return corr_train, corr_test, sig_corr, tsc_train, tsc_test, dist_train, dist_test, V_A_train, V_B_train
 
+    def match_mismatch(self, trial_len):
+        fold = self.fold
+        n_components = self.n_components
+        corr_tensor_list = []
+        tsc_mtx_list = []
+        for idx in range(fold):
+            EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
+            _, _, _, _, V_A_train, V_B_train, _ = self.fit(EEG_train, Sti_train)
+            EEG_trials = utils.into_trials(EEG_test, trial_len)
+            Sti_trials = utils.into_trials(Sti_test, trial_len)
+            nb_trials = len(Sti_trials)
+            corr_tensor = np.zeros((nb_trials, nb_trials, n_components))
+            tsc_mtx = np.zeros((nb_trials, nb_trials))
+            for i in range(nb_trials):
+                for j in range(nb_trials):
+                    corr_tensor[i,j,:], tsc_mtx[i,j], _, _ = self.cal_corr_coe(EEG_trials[i], Sti_trials[j], V_A_train, V_B_train)
+            corr_tensor_list.append(corr_tensor)
+            tsc_mtx_list.append(tsc_mtx)
+        return corr_tensor_list, tsc_mtx_list
 
 class GeneralizedCCA:
     def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False):
