@@ -59,6 +59,17 @@ def To_posi_semidef(X):
     return X_semiposi_def
 
 
+def schmidt_orthogonalization(vectors):
+    vector_dim, num_vectors = vectors.shape
+    orthogonal_vectors = np.zeros((vector_dim, num_vectors))
+    for i in range(num_vectors):
+        orthogonal_vector = vectors[:, i]
+        for j in range(i):
+            orthogonal_vector -= np.dot(vectors[:, i], orthogonal_vectors[:, j]) / np.dot(orthogonal_vectors[:, j], orthogonal_vectors[:, j]) * orthogonal_vectors[:, j]
+        orthogonal_vectors[:, i] = orthogonal_vector / np.linalg.norm(orthogonal_vector)
+    return orthogonal_vectors
+
+
 def Hankel_mtx(L_timefilter, x, offset=0):
     '''
     Calculate the Hankel matrix
