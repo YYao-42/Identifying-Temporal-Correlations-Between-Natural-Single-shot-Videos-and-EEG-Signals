@@ -145,7 +145,58 @@ def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
     return lam, W
 
 
+def into_blocks(X, nb_blocks):
+    # Divide tensor into blocks along zeroth axis
+    if X.ndim == 1:
+        X = np.expand_dims(X, axis=1)
+    X_dim = X.shape
+    remainder = X_dim[0] % nb_blocks
+    # discard remainder
+    if remainder > 0:
+        X_dividable = X[:-remainder]
+    else:
+        X_dividable = X
+    blocks = np.split(X_dividable, nb_blocks)
+    return blocks
+
+
+def get_val_set_single(nested_data, fold, fold_val):
+    '''
+    Get validation set from [EEG_i, Vis_i]
+    '''
+    # Get [[EEG_i_fold_1, ...], [Vis_i_fold_1, ...]]
+    nested_fold_list = [into_blocks(mod, fold) for mod in nested_data]
+    # rest_list: [EEG_i_rest, Vis_i_rest] val_list: [EEG_i_val, Vis_i_val]
+    rest_list, val_list, _, _ = split_mm_balance(nested_fold_list, fold_val, fold_idx=fold_val)
+    return rest_list, val_list
+
+
+def get_val_set(nested_datalist, fold, fold_val):
+    '''
+    Get validation set from nested data list [[EEG_1, EEG_2, ...], [Vis_1, Vis_2, ...]]
+    Return:
+    nested_restlist: [[EEG_1_rest, EEG_2_rest, ...], [Vis_1_rest, Vis_2_rest, ...]]
+    nested_vallist: [[EEG_1_val, EEG_2_val, ...], [Vis_1_val, Vis_2_val, ...]]
+    rest_list: [EEG_rest, Vis_rest] 
+    val_list: [EEG_val, Vis_val]
+    '''
+    nb_videos = len(nested_datalist[0])
+    nested_restlist = [[],[]]
+    nested_vallist = [[],[]]
+    for i in range(nb_videos):
+        nested_data = [nested_datalist[0][i], nested_datalist[1][i]]
+        rest_list, val_list = get_val_set_single(nested_data, fold, fold_val)
+        nested_restlist[0].append(rest_list[0])
+        nested_restlist[1].append(rest_list[1])
+        nested_vallist[0].append(val_list[0])
+        nested_vallist[1].append(val_list[1])
+    rest_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_restlist]
+    val_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_vallist]
+    return nested_restlist, nested_vallist, rest_list, val_list
+
+
 def into_trials(data, fs, t=60):
+    # Divide data into t min trials
     if np.ndim(data)==1:
         data = np.expand_dims(data, axis=1)
     T = data.shape[0]
@@ -1156,7 +1207,7 @@ def name_paths(eeg_path_head, feature_path_head):
     return videonames, eeg_sets_paths, feature_sets_paths
 
 
-def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 5)):
+def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 5), ifISC=False):
     _, n_components = forward_model.shape
     biosemi_layout = mne.channels.read_layout('biosemi')
     create_info = mne.create_info(biosemi_layout.names, ch_types='eeg', sfreq=30)
@@ -1171,7 +1222,10 @@ def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 5)):
             n_column = 5
         ax = plt.subplot(n_row, n_column, i + 1)
         mne.viz.plot_topomap(np.abs(forward_model[:,i]), create_info, ch_type='eeg', axes=ax, show=False)
-        ax.set_title("CC: {order}\n corr: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
+        if ifISC:
+            ax.set_title("CC: {order}\n ISC: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
+        else:
+            ax.set_title("CC: {order}\n corr: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
     plt.tight_layout()
     plt.savefig(file_name, dpi=1200)
     plt.close()

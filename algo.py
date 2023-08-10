@@ -124,7 +124,7 @@ class LeastSquares:
 
 
 class CanonicalCorrelationAnalysis:
-    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG=0, offset_Stim=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False):
+    def __init__(self, EEG_list, Stim_list, fs, L_EEG, L_Stim, offset_EEG=0, offset_Stim=0, fold=10, n_components=5, regularization='lwcov', K_regu=None, message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=2):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         Stim_list: list of stimulus, each element is a T(#sample)xDy(#feature dim) array
@@ -154,6 +154,7 @@ class CanonicalCorrelationAnalysis:
         self.n_permu = n_permu
         self.p_value = p_value
         self.trials = trials
+        self.dim_subspace = dim_subspace
 
     def fit(self, X, Y, V_A=None, V_B=None, Lam=None):
         if np.ndim(Y) == 1:
@@ -210,8 +211,9 @@ class CanonicalCorrelationAnalysis:
             # to match filters v_a and v_b s.t. corr_coe is always positive
             V_A[:,corr_coe<0] = -1*V_A[:,corr_coe<0]
             corr_coe[corr_coe<0] = -1*corr_coe[corr_coe<0]
-        TSC = np.sum(np.square(corr_coe[:2]))
-        ChDist = np.sqrt(2-TSC)
+            # Note: Due to the regularization, the correlation coefficients are not exactly the same as the quare root of the Lam. 
+        TSC = np.sum(np.square(corr_coe[:self.dim_subspace]))
+        ChDist = np.sqrt(self.dim_subspace-TSC)
         return corr_coe, TSC, ChDist, p_value, V_A, V_B, Lam
 
     def cal_corr_coe(self, X, Y, V_A, V_B):
@@ -222,8 +224,8 @@ class CanonicalCorrelationAnalysis:
         corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(self.n_components)]
         corr_coe = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         p_value = np.array([corr_pvalue[k][1] for k in range(self.n_components)])
-        TSC = np.sum(np.square(corr_coe[:2]))
-        ChDist = np.sqrt(2-TSC)
+        TSC = np.sum(np.square(corr_coe[:self.dim_subspace]))
+        ChDist = np.sqrt(self.dim_subspace-TSC)
         return corr_coe, TSC, ChDist, p_value
 
     def cal_corr_coe_trials(self, X_trials, Y_trials, V_A, V_B):
@@ -309,7 +311,7 @@ class CanonicalCorrelationAnalysis:
             print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
         return corr_train, corr_test, sig_corr, tsc_train, tsc_test, dist_train, dist_test, V_A_train, V_B_train
 
-    def match_mismatch(self, trial_len):
+    def match_mismatch(self, trial_len, rerank=True):
         fold = self.fold
         n_components = self.n_components
         corr_tensor_list = []
@@ -317,20 +319,23 @@ class CanonicalCorrelationAnalysis:
         for idx in range(fold):
             EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
             _, _, _, _, V_A_train, V_B_train, _ = self.fit(EEG_train, Sti_train)
-            EEG_trials = utils.into_trials(EEG_test, trial_len)
-            Sti_trials = utils.into_trials(Sti_test, trial_len)
+            EEG_trials = utils.into_trials(EEG_test, self.fs, trial_len)
+            Sti_trials = utils.into_trials(Sti_test, self.fs, trial_len)
             nb_trials = len(Sti_trials)
             corr_tensor = np.zeros((nb_trials, nb_trials, n_components))
             tsc_mtx = np.zeros((nb_trials, nb_trials))
             for i in range(nb_trials):
                 for j in range(nb_trials):
                     corr_tensor[i,j,:], tsc_mtx[i,j], _, _ = self.cal_corr_coe(EEG_trials[i], Sti_trials[j], V_A_train, V_B_train)
+                    if rerank:
+                        idx_sort = np.argsort(-corr_tensor[i,j,:])
+                        corr_tensor[i,j,:] = corr_tensor[i,j,idx_sort]
             corr_tensor_list.append(corr_tensor)
             tsc_mtx_list.append(tsc_mtx)
         return corr_tensor_list, tsc_mtx_list
 
 class GeneralizedCCA:
-    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False):
+    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=3):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         fs: Sampling rate
@@ -359,6 +364,7 @@ class GeneralizedCCA:
         self.n_permu = n_permu
         self.p_value = p_value
         self.trials = trials
+        self.dim_subspace = dim_subspace
 
     def fit(self, X_stack):
         '''
@@ -450,9 +456,9 @@ class GeneralizedCCA:
             X_trans = np.squeeze(X_trans, axis=1)
             corr_mtx_stack[:,:,component] = np.corrcoef(X_trans, rowvar=False)
             avg_corr[component] = np.sum(corr_mtx_stack[:,:,component]-np.eye(N))/N/(N-1)
-        Squared_corr = np.sum(np.square(corr_mtx_stack[:,:,:3]), axis=2)
-        avg_TSC = np.sum(Squared_corr-3*np.eye(N))/N/(N-1)
-        Chordal_dist = np.sqrt(3-Squared_corr)
+        Squared_corr = np.sum(np.square(corr_mtx_stack[:,:,:self.dim_subspace]), axis=2)
+        avg_TSC = np.sum(Squared_corr-self.dim_subspace*np.eye(N))/N/(N-1)
+        Chordal_dist = np.sqrt(self.dim_subspace-Squared_corr)
         avg_ChDist = np.sum(Chordal_dist)/N/(N-1)
         return avg_corr, avg_ChDist, avg_TSC
 
@@ -639,7 +645,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
 
 
 class StimulusInformedGCCA:
-    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False):
+    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=3):
         '''
         nested_datalist: [EEG_list, Stim_list], where
             EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
@@ -673,6 +679,7 @@ class StimulusInformedGCCA:
         self.n_permu = n_permu
         self.p_value = p_value
         self.trials = trials
+        self.dim_subspace = dim_subspace
 
     def fit(self, datalist, rho):
         EEG, Stim = datalist
@@ -806,9 +813,9 @@ class StimulusInformedGCCA:
                 corr_mtx_list.append(corr_mtx)
                 avg_corr[component] = np.sum(corr_mtx-np.eye(N))/N/(N-1)
             corr_mtx_stack = np.stack(corr_mtx_list, axis=2)
-            Squared_corr = np.sum(np.square(corr_mtx_stack[:,:,:3]), axis=2)
-            avg_TSC = np.sum(Squared_corr-3*np.eye(N))/N/(N-1)
-            Chordal_dist = np.sqrt(3-Squared_corr)
+            Squared_corr = np.sum(np.square(corr_mtx_stack[:,:,:self.dim_subspace]), axis=2)
+            avg_TSC = np.sum(Squared_corr-self.dim_subspace*np.eye(N))/N/(N-1)
+            Chordal_dist = np.sqrt(self.dim_subspace-Squared_corr)
             avg_ChDist = np.sum(Chordal_dist)/N/(N-1)
         return avg_corr, avg_ChDist, avg_TSC
 
@@ -820,20 +827,23 @@ class StimulusInformedGCCA:
         return avg_corr, avg_ChDist, avg_TSC
 
     def rho_sweep(self):
-        train_list, _, nested_train, nested_test = utils.split_mm_balance(self.nested_datalist, fold=5, fold_idx=5)
-        _, val_list, nested_test_, _ = utils.split_mm_balance(nested_test, fold=5, fold_idx=5)   
-        best = 0
+        nested_train, _, train_list, val_list  = utils.get_val_set(self.nested_datalist, self.fold, fold_val=10)
+        best = -np.inf
         for i in self.sweep_list:
             rho = 10**i
             Wlist_train, _, _, _ = self.fit(train_list, rho)
-            _, _, tsc_test = self.avg_corr_coe(val_list, Wlist_train)
-            if tsc_test > best:
+            if self.trials:
+                mod_trials = [utils.into_trials(mod, self.fs) for mod in val_list]
+                val_trails = [[mod[idx_trial] for mod in mod_trials] for idx_trial in range(len(mod_trials[0]))]
+                corr_test, _, _= self.avg_corr_coe_trials(val_trails, Wlist_train)
+            else:
+                corr_test, _, _ = self.avg_corr_coe(val_list, Wlist_train)
+            # print('rho={}, corr={}'.format(rho, corr_test[0]))
+            if corr_test[0] > best:
                 rho_best = rho
-                best = tsc_test
-        # merge train set and unused test set together
-        nested_update = []
-        for i in range(len(self.nested_datalist)):
-            nested_update.append([np.concatenate((train, test), axis=0) for train, test in zip(nested_train[i], nested_test_[i])])
+                best = corr_test[0]
+        # Discard the part used for validation
+        nested_update = nested_train
         return rho_best, nested_update
 
     def permutation_test(self, datalist, Wlist, block_len):
