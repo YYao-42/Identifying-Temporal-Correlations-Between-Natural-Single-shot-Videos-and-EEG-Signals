@@ -54,9 +54,7 @@ class LeastSquares:
             W_f = lstsq(Stim_Hankel, EEG)[0]
         filtered_Stim = Stim_Hankel@W_f
         mse = np.mean((filtered_Stim-EEG)**2)
-        corr_pvalue = [pearsonr(EEG[:,k], filtered_Stim[:,k]) for k in range(self.n_components)]
-        corr = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
-        return W_f, mse, corr
+        return W_f, mse
 
     def decoder(self, EEG, Stim, W_b=None):
         '''
@@ -77,50 +75,7 @@ class LeastSquares:
             W_b = lstsq(EEG_Hankel, Stim)[0]
         filtered_EEG = EEG_Hankel@W_b
         mse = np.mean((filtered_EEG-Stim)**2)
-        corr_pvalue = [pearsonr(filtered_EEG[:,k], Stim[:,k]) for k in range(self.n_components)]
-        corr = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
-        return W_b, mse, corr
-
-    def permutation_test(self, X, Y, W_fb, block_len):
-        corr_coe_topK = np.zeros((self.n_permu, self.n_components))
-        for i in tqdm(range(self.n_permu)):
-            X_shuffled = utils.shuffle_2D(X, block_len)
-            Y_shuffled = utils.shuffle_2D(Y, block_len)
-            if self.decoding:
-                _, _, corr_coe_topK[i,:] = self.decoder(X_shuffled, Y_shuffled, W_b=W_fb)
-            else:
-                _, _, corr_coe_topK[i,:] = self.encoder(X_shuffled, Y_shuffled, W_f=W_fb)
-        return corr_coe_topK
-
-    def cross_val(self):
-        fold = self.fold
-        mse_train = np.zeros((fold, self.n_components))
-        mse_test = np.zeros((fold, self.n_components))
-        corr_train = np.zeros((fold, self.n_components))
-        corr_test = np.zeros((fold, self.n_components))
-        for idx in range(fold):
-            EEG_train, EEG_test, Sti_train, Sti_test = utils.split_balance(self.EEG_list, self.Stim_list, fold=fold, fold_idx=idx+1)
-            if self.decoding:
-                W_train, mse_train[idx,:], corr_train[idx,:] = self.decoder(EEG_train, Sti_train)
-                _, mse_test[idx,:], corr_test[idx,:] = self.decoder(EEG_test, Sti_test, W_b=W_train)
-            else:
-                W_train, mse_train[idx,:], corr_train[idx,:] = self.encoder(EEG_train, Sti_train)
-                _, mse_test[idx], corr_test[idx] = self.encoder(EEG_test, Sti_test, W_f=W_train)
-        if self.signifi_level:
-            if self.pool:
-                corr_trials = self.permutation_test(EEG_test, Sti_test, W_fb=W_train, block_len=1)
-                corr_trials = np.sort(abs(corr_trials), axis=None)
-                sig_idx = -int(self.n_permu*self.p_value*self.n_components)
-                print('Significance level: {}'.format(corr_trials[sig_idx]))
-            else:
-                corr_trials = self.permutation_test(EEG_test, Sti_test, W_fb=W_train, block_len=1)
-                corr_trials = np.sort(abs(corr_trials), axis=0)
-                sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level of each component: {}'.format(corr_trials[sig_idx,:]))
-        if self.message:
-            print('Average correlation across {} training folds: {}'.format(self.fold, np.average(corr_train, axis=0)))
-            print('Average correlation across {} test folds: {}'.format(self.fold, np.average(corr_test, axis=0)))
-        return mse_train, mse_test, corr_train, corr_test, W_train
+        return W_b, mse
 
 
 class CanonicalCorrelationAnalysis:
@@ -216,16 +171,29 @@ class CanonicalCorrelationAnalysis:
         ChDist = np.sqrt(self.dim_subspace-TSC)
         return corr_coe, TSC, ChDist, p_value, V_A, V_B, Lam
 
-    def cal_corr_coe(self, X, Y, V_A, V_B):
+    def get_transformed_data(self, X, Y, V_A, V_B):
+        '''
+        Get the transformed data
+        '''
         mtx_X = utils.block_Hankel(X, self.L_EEG, self.offset_EEG)
         mtx_Y = utils.block_Hankel(Y, self.L_Stim, self.offset_Stim)
-        X_trans = mtx_X@V_A
-        Y_trans = mtx_Y@V_B
+        mtx_X_centered = mtx_X - np.mean(mtx_X, axis=0, keepdims=True)
+        mtx_Y_centered = mtx_Y - np.mean(mtx_Y, axis=0, keepdims=True)
+        X_trans = mtx_X_centered@V_A
+        Y_trans = mtx_Y_centered@V_B
+        return X_trans, Y_trans
+
+    def get_corr_coe(self, X_trans, Y_trans):
         corr_pvalue = [pearsonr(X_trans[:,k], Y_trans[:,k]) for k in range(self.n_components)]
         corr_coe = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         p_value = np.array([corr_pvalue[k][1] for k in range(self.n_components)])
         TSC = np.sum(np.square(corr_coe[:self.dim_subspace]))
         ChDist = np.sqrt(self.dim_subspace-TSC)
+        return corr_coe, TSC, ChDist, p_value
+
+    def cal_corr_coe(self, X, Y, V_A, V_B):
+        X_trans, Y_trans = self.get_transformed_data(X, Y, V_A, V_B)
+        corr_coe, TSC, ChDist, p_value = self.get_corr_coe(X_trans, Y_trans)
         return corr_coe, TSC, ChDist, p_value
 
     def cal_corr_coe_trials(self, X_trials, Y_trials, V_A, V_B):
@@ -237,18 +205,23 @@ class CanonicalCorrelationAnalysis:
 
     def permutation_test(self, X, Y, V_A, V_B, Lam, block_len):
         corr_coe_topK = np.zeros((self.n_permu, self.n_components))
+        X_trans, Y_trans = self.get_transformed_data(X, Y, V_A, V_B)
         for i in tqdm(range(self.n_permu)):
-            X_shuffled = utils.shuffle_2D(X, block_len)
-            Y_shuffled = utils.shuffle_2D(Y, block_len)
-            corr_coe_topK[i,:], _, _, _, _, _, _ = self.fit(X_shuffled, Y_shuffled, V_A=V_A, V_B=V_B, Lam=Lam)
+            X_shuffled = utils.shuffle_2D(X_trans, block_len)
+            Y_shuffled = utils.shuffle_2D(Y_trans, block_len)
+            corr_pvalue = [pearsonr(X_shuffled[:,k], Y_shuffled[:,k]) for k in range(self.n_components)]
+            corr_coe_topK[i,:] = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         return corr_coe_topK
 
     def permutation_test_trials(self, X_trials, Y_trials, V_A, V_B, block_len):
         corr_coe_topK = np.empty((0, self.n_components))
+        transformed_data_list = [self.get_transformed_data(X, Y, V_A, V_B) for X, Y in zip(X_trials, Y_trials)]
         for i in tqdm(range(self.n_permu)):
-            X_shuffled_trials = [utils.shuffle_2D(X, block_len) for X in X_trials]
-            corr_coe, _, _ = self.cal_corr_coe_trials(X_shuffled_trials, Y_trials, V_A, V_B)
-            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:self.n_components], axis=0)), axis=0)
+            X_shuffled_trials = [utils.shuffle_2D(trans[0], block_len) for trans in transformed_data_list]
+            Y_shuffled_trials = [utils.shuffle_2D(trans[1], block_len) for trans in transformed_data_list]
+            stat_trials_list = [self.get_corr_coe(X_trans, Y_trans) for X_trans, Y_trans in zip(X_shuffled_trials, Y_shuffled_trials)]
+            corr_coe_trials = np.concatenate(tuple([np.expand_dims(corr_coe[0], axis=0) for corr_coe in stat_trials_list]), axis=0)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.mean(corr_coe_trials, axis=0, keepdims=True)), axis=0)
         return corr_coe_topK
 
     def forward_model(self, X, V_A):
@@ -334,8 +307,9 @@ class CanonicalCorrelationAnalysis:
             tsc_mtx_list.append(tsc_mtx)
         return corr_tensor_list, tsc_mtx_list
 
+
 class GeneralizedCCA:
-    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=3):
+    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         fs: Sampling rate
@@ -469,25 +443,45 @@ class GeneralizedCCA:
         avg_TSC = np.array([stats[i][2] for i in range(len(X_trials))]).mean()
         return avg_corr, avg_ChDist, avg_TSC
 
+    def get_transformed_data(self, X_stack, W_stack):
+        _, _, N = X_stack.shape
+        if np.ndim (W_stack) == 2: # for correlated component analysis
+            W_stack = np.expand_dims(W_stack, axis=1)
+            W_stack = np.repeat(W_stack, N, axis=1)
+        Hankellist = [np.expand_dims(utils.block_Hankel(X_stack[:,:,n], self.L, self.offset), axis=2) for n in range(N)]
+        Hankel_center = [hankel - np.mean(hankel, axis=0, keepdims=True) for hankel in Hankellist]
+        X_center = np.concatenate(tuple(Hankel_center), axis=2)
+        X_trans = np.einsum('tdn,dkn->tkn', X_center, np.transpose(W_stack, (0,2,1)))
+        return X_trans
+
+    def get_avg_corr_coe(self, X_trans):
+        _, _, N = X_trans.shape
+        n_components = self.n_components
+        corr_mtx_stack = np.zeros((N,N,n_components))
+        avg_corr = np.zeros(n_components)
+        for component in range(n_components):
+            corr_mtx_stack[:,:,component] = np.corrcoef(X_trans[:,component,:], rowvar=False)
+            avg_corr[component] = np.sum(corr_mtx_stack[:,:,component]-np.eye(N))/N/(N-1)
+        return avg_corr
+
     def permutation_test(self, X_stack, W_stack, block_len):
         corr_coe_topK = np.empty((0, self.n_components))
-        tsc_vec = np.empty(1)
+        X_trans = self.get_transformed_data(X_stack, W_stack)
         for i in tqdm(range(self.n_permu)):
-            X_shuffled = utils.shuffle_3D(X_stack, block_len)
-            corr_coe, _, tsc = self.avg_corr_coe(X_shuffled, W_stack)
-            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:self.n_components], axis=0)), axis=0)
-            tsc_vec = np.append(tsc_vec, np.array([tsc]))
-        return corr_coe_topK, tsc_vec
+            X_shuffled = utils.shuffle_3D(X_trans, block_len)
+            corr_coe = self.get_avg_corr_coe(X_shuffled)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe, axis=0)), axis=0)
+        return corr_coe_topK
 
     def permutation_test_trials(self, X_trials, W_stack, block_len):
         corr_coe_topK = np.empty((0, self.n_components))
-        tsc_vec = np.empty(1)
+        X_trans_trials = [self.get_transformed_data(X_stack, W_stack) for X_stack in X_trials]
         for i in tqdm(range(self.n_permu)):
-            X_shuffled_trials = [utils.shuffle_3D(X_stack, block_len) for X_stack in X_trials]
-            corr_coe, _, tsc = self.avg_corr_coe_trials(X_shuffled_trials, W_stack)
-            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:self.n_components], axis=0)), axis=0)
-            tsc_vec = np.append(tsc_vec, np.array([tsc]))
-        return corr_coe_topK, tsc_vec
+            X_shuffled_trials = [utils.shuffle_3D(X_stack, block_len) for X_stack in X_trans_trials]
+            corr_coe_trials_list = [self.get_avg_corr_coe(X_stack) for X_stack in X_shuffled_trials]
+            corr_coe_trials = np.concatenate(tuple([np.expand_dims(corr_coe, axis=0) for corr_coe in corr_coe_trials_list]), axis=0)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.mean(corr_coe_trials, axis=0, keepdims=True)), axis=0)
+        return corr_coe_topK
 
     def cross_val(self):
         fold = self.fold
@@ -510,22 +504,20 @@ class GeneralizedCCA:
         if self.signifi_level:
             if self.pool:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trials, W_train, block_len=1)
+                    corr_trials = self.permutation_test_trials(test_trials, W_train, block_len=1)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list[0], W_train, block_len=1)
+                    corr_trials = self.permutation_test(test_list[0], W_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
-                print('Significance level: ISC={}, TSC={}'.format(corr_trials[sig_idx], tsc_trials[-int(self.n_permu*self.p_value)]))
+                print('Significance level: ISC={}'.format(corr_trials[sig_idx]))
             else:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trials, W_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test_trials(test_trials, W_train, block_len=20*self.fs)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list[0], W_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test(test_list[0], W_train, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level: ISCs={}, TSC={}'.format(corr_trials[sig_idx,:], tsc_trials[sig_idx]))
+                print('Significance level: ISCs={}'.format(corr_trials[sig_idx,:]))
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -622,22 +614,20 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
         if self.signifi_level:
             if self.pool:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trials, W_train, block_len=1)
+                    corr_trials = self.permutation_test_trials(test_trials, W_train, block_len=1)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list[0], W_train, block_len=1)
+                    corr_trials = self.permutation_test(test_list[0], W_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
-                print('Significance level: ISC={}, TSC={}'.format(corr_trials[sig_idx], tsc_trials[-int(self.n_permu*self.p_value)]))
+                print('Significance level: ISC={}'.format(corr_trials[sig_idx]))
             else:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trials, W_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test_trials(test_trials, W_train, block_len=20*self.fs)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list[0], W_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test(test_list[0], W_train, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level: ISCs={}, TSC={}'.format(corr_trials[sig_idx,:], tsc_trials[sig_idx]))
+                print('Significance level: ISCs={}'.format(corr_trials[sig_idx,:]))
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -645,7 +635,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
 
 
 class StimulusInformedGCCA:
-    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=3):
+    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4):
         '''
         nested_datalist: [EEG_list, Stim_list], where
             EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
@@ -846,26 +836,62 @@ class StimulusInformedGCCA:
         nested_update = nested_train
         return rho_best, nested_update
 
+    def get_transformed_data(self, datalist, Wlist):
+        nb_mod = len(datalist)
+        data_trans_list = []
+        for i in range(nb_mod):
+            W = Wlist[i]
+            X = datalist[i]
+            L = self.Llist[i]
+            offset = self.offsetlist[i]
+            if np.ndim(X) == 3:
+                _, _, N = X.shape
+                Hankellist = [np.expand_dims(utils.block_Hankel(X[:,:,n], L, offset), axis=2) for n in range(N)]
+                Hankel_center = [hankel - np.mean(hankel, axis=0, keepdims=True) for hankel in Hankellist]
+                X_center = np.concatenate(tuple(Hankel_center), axis=2)
+                X_trans = np.einsum('tdn,dkn->tkn', X_center, np.transpose(W, (0,2,1)))
+            elif np.ndim(W) == 2:
+                X_hankel = utils.block_Hankel(X, L, offset)
+                X_trans = X_hankel@W
+            else:
+                raise ValueError('The dimension of W is incorrect')
+            data_trans_list.append(X_trans)
+        return data_trans_list
+
+    def get_avg_corr_coe(self, data_trans_list):
+        if self.ISC and (np.ndim(data_trans_list[0]) != 2):
+            X_trans = data_trans_list[0]
+        else:
+            data_trans_list = [X_trans if np.ndim(X_trans)==3 else np.expand_dims(X_trans, axis=2) for X_trans in data_trans_list]
+            X_trans = np.concatenate(tuple(data_trans_list), axis=2)
+        _, _, N = X_trans.shape
+        n_components = self.n_components
+        corr_mtx_stack = np.zeros((N,N,n_components))
+        avg_corr = np.zeros(n_components)
+        for component in range(n_components):
+            corr_mtx_stack[:,:,component] = np.corrcoef(X_trans[:,component,:], rowvar=False)
+            avg_corr[component] = np.sum(corr_mtx_stack[:,:,component]-np.eye(N))/N/(N-1)
+        return avg_corr
+
     def permutation_test(self, datalist, Wlist, block_len):
         n_components = self.n_components
         corr_coe_topK = np.empty((0, n_components))
-        tsc_vec = np.empty(1)
+        data_trans_list = self.get_transformed_data(datalist, Wlist)
         for i in tqdm(range(self.n_permu)):
-            datalist_shuffled = utils.shuffle_datalist(datalist, block_len)
-            corr_coe, _, tsc = self.avg_corr_coe(datalist_shuffled, Wlist)
-            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:n_components], axis=0)), axis=0)
-            tsc_vec = np.append(tsc_vec, np.array([tsc]))
-        return corr_coe_topK, tsc_vec
+            datalist_shuffled = utils.shuffle_datalist(data_trans_list, block_len)
+            corr_coe = self.get_avg_corr_coe(datalist_shuffled)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe, axis=0)), axis=0)
+        return corr_coe_topK
 
     def permutation_test_trials(self, datalist_trials, Wlist, block_len):
         corr_coe_topK = np.empty((0, self.n_components))
-        tsc_vec = np.empty(1)
+        data_trans_trials_list = [self.get_transformed_data(datalist, Wlist) for datalist in datalist_trials]
         for i in tqdm(range(self.n_permu)):
-            datalist_shuffled_trials = [utils.shuffle_datalist(trial, block_len) for trial in datalist_trials]
-            corr_coe, _, tsc = self.avg_corr_coe_trials(datalist_shuffled_trials, Wlist)
-            corr_coe_topK = np.concatenate((corr_coe_topK, np.expand_dims(corr_coe[:self.n_components], axis=0)), axis=0)
-            tsc_vec = np.append(tsc_vec, np.array([tsc]))
-        return corr_coe_topK, tsc_vec
+            datalist_shuffled_trials = [utils.shuffle_datalist(trial, block_len) for trial in data_trans_trials_list]
+            corr_coe_trials_list = [self.get_avg_corr_coe(data_trans_list) for data_trans_list in datalist_shuffled_trials]
+            corr_coe_trials = np.concatenate(tuple([np.expand_dims(corr_coe, axis=0) for corr_coe in corr_coe_trials_list]), axis=0)
+            corr_coe_topK = np.concatenate((corr_coe_topK, np.mean(corr_coe_trials, axis=0, keepdims=True)), axis=0)
+        return corr_coe_topK
 
     def cross_val(self, rho=None):
         n_components = self.n_components
@@ -893,22 +919,20 @@ class StimulusInformedGCCA:
         if self.signifi_level:
             if self.pool:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trails, Wlist_train, block_len=1)
+                    corr_trials = self.permutation_test_trials(test_trails, Wlist_train, block_len=1)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list, Wlist_train, block_len=1)
+                    corr_trials = self.permutation_test(test_list, Wlist_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=None)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value*n_components)
-                print('Significance level: ISC={}, TSC={}'.format(corr_trials[sig_idx], tsc_trials[-int(self.n_permu*self.p_value)]))
+                print('Significance level: ISC={}'.format(corr_trials[sig_idx]))
             else:
                 if self.trials:
-                    corr_trials, tsc_trials = self.permutation_test_trials(test_trails, Wlist_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test_trials(test_trails, Wlist_train, block_len=20*self.fs)
                 else:
-                    corr_trials, tsc_trials = self.permutation_test(test_list, Wlist_train, block_len=20*self.fs)
+                    corr_trials = self.permutation_test(test_list, Wlist_train, block_len=20*self.fs)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
-                tsc_trials = np.sort(tsc_trials)
                 sig_idx = -int(self.n_permu*self.p_value)
-                print('Significance level: ISCs={}, TSC={}'.format(corr_trials[sig_idx,:], tsc_trials[sig_idx]))
+                print('Significance level: ISCs={}'.format(corr_trials[sig_idx,:]))
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
@@ -1033,11 +1057,20 @@ class LSGCCA:
         self.n_permu = n_permu
         self.p_value = p_value
 
-    def correlation(self, EEG, Stim, We, Ws):
+    def get_transformed_EEG(self, EEG, We):
         EEG_Hankel = utils.block_Hankel(EEG, self.L_EEG, self.offset_EEG)
+        EEG_Hankel_center = EEG_Hankel - np.mean(EEG_Hankel, axis=0, keepdims=True)
+        filtered_EEG = EEG_Hankel_center @ We
+        return filtered_EEG
+
+    def get_transformed_data(self, EEG, Stim, We, Ws):
+        filtered_EEG = self.get_transformed_EEG(EEG, We)
         Stim_Hankel = utils.block_Hankel(Stim, self.L_Stim, self.offset_Stim)
-        filtered_EEG = EEG_Hankel @ We
         filtered_Stim = Stim_Hankel @ Ws
+        return filtered_EEG, filtered_Stim
+
+    def correlation(self, EEG, Stim, We, Ws):
+        filtered_EEG, filtered_Stim = self.get_transformed_data(EEG, Stim, We, Ws)
         corr_pvalue = [pearsonr(filtered_EEG[:,k], filtered_Stim[:,k]) for k in range(self.n_components)]
         corr_coe = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         p_value = np.array([corr_pvalue[k][1] for k in range(self.n_components)])
@@ -1045,10 +1078,12 @@ class LSGCCA:
 
     def permutation_test(self, EEG, Stim, We, Ws, block_len):
         corr_coe_topK = np.zeros((self.n_permu, self.n_components))
+        filtered_EEG, filtered_Stim = self.get_transformed_data(EEG, Stim, We, Ws)
         for i in tqdm(range(self.n_permu)):
-            EEG_shuffled = utils.shuffle_2D(EEG, block_len)
-            Stim_shuffled = utils.shuffle_2D(Stim, block_len)
-            corr_coe_topK[i,:], _, = self.correlation(EEG_shuffled, Stim_shuffled, We, Ws)
+            EEG_shuffled = utils.shuffle_2D(filtered_EEG, block_len)
+            Stim_shuffled = utils.shuffle_2D(filtered_Stim, block_len)
+            corr_pvalue = [pearsonr(EEG_shuffled[:,k], Stim_shuffled[:,k]) for k in range(self.n_components)]
+            corr_coe_topK[i,:] = np.array([corr_pvalue[k][0] for k in range(self.n_components)])
         return corr_coe_topK
 
     def to_latent_space(self):
@@ -1086,7 +1121,9 @@ class LSGCCA:
             F_train = self.nested_F_train[idx]
             # obtain the stimulus filters by least square regression
             LS = LeastSquares(self.EEG_list, self.Stim_list, self.fs, decoding=False, L_Stim=self.L_Stim, offset_Stim=self.offset_Stim)
-            Ws_train, _, _ = LS.encoder(S, train_list[1])
+            EEG_trans = self.get_transformed_EEG(train_list[0][:,:,self.id_sub], We_train[:,self.id_sub,:])
+            Ws_train, _, = LS.encoder(EEG_trans, train_list[1])
+            # Ws_train, _, = LS.encoder(S, train_list[1])
             corr_train[idx,:], _ = self.correlation(train_list[0][:,:,self.id_sub], train_list[1], We_train[:,self.id_sub,:], Ws_train)
             corr_test[idx,:], _ = self.correlation(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train)
         if self.signifi_level:
