@@ -403,14 +403,15 @@ class GeneralizedCCA:
         F = utils.F_organize(F_redun, self.L, self.offset)
         return F
 
-    def avg_corr_coe(self, X_stack, W_stack):
+    def avg_stats(self, X_stack, W_stack):
         '''
-        Calculate the pairwise average correlation.
+        Calculate the pairwise average statistics.
         Inputs:
         X_stack: stacked (along axis 2) data of different subjects
         W_stack: weights 1) dim(W)=2: results of correlated component analysis 2) dim(W)=3: results of GCCA
         Output:
         avg_corr: pairwise average correlation
+        avg_cov: pairwise average covariance
         avg_ChDist: pairwise average Chordal distance
         avg_TSC: pairwise average total squared correlation
         '''
@@ -419,7 +420,9 @@ class GeneralizedCCA:
         Hankellist = [np.expand_dims(utils.block_Hankel(X_stack[:,:,n], self.L, self.offset), axis=2) for n in range(N)]
         X_stack = np.concatenate(tuple(Hankellist), axis=2)
         corr_mtx_stack = np.zeros((N,N,n_components))
+        cov_mtx_stack = np.zeros((N,N,n_components))
         avg_corr = np.zeros(n_components)
+        avg_cov = np.zeros(n_components)
         if np.ndim (W_stack) == 2: # for correlated component analysis
             W_stack = np.expand_dims(W_stack, axis=1)
             W_stack = np.repeat(W_stack, N, axis=1)
@@ -429,19 +432,22 @@ class GeneralizedCCA:
             X_trans = np.einsum('tdn,dln->tln', X_stack, w)
             X_trans = np.squeeze(X_trans, axis=1)
             corr_mtx_stack[:,:,component] = np.corrcoef(X_trans, rowvar=False)
+            cov_mtx_stack[:,:,component] = np.cov(X_trans, rowvar=False)
             avg_corr[component] = np.sum(corr_mtx_stack[:,:,component]-np.eye(N))/N/(N-1)
+            avg_cov[component] = (np.sum(cov_mtx_stack[:,:,component])-np.sum(np.diag(cov_mtx_stack[:,:,component])))/N/(N-1)
         Squared_corr = np.sum(np.square(corr_mtx_stack[:,:,:self.dim_subspace]), axis=2)
         avg_TSC = np.sum(Squared_corr-self.dim_subspace*np.eye(N))/N/(N-1)
         Chordal_dist = np.sqrt(self.dim_subspace-Squared_corr)
         avg_ChDist = np.sum(Chordal_dist)/N/(N-1)
-        return avg_corr, avg_ChDist, avg_TSC
+        return avg_corr, avg_cov, avg_ChDist, avg_TSC
 
-    def avg_corr_coe_trials(self, X_trials, W_stack):
-        stats = [(self.avg_corr_coe(trial, W_stack)) for trial in X_trials]
+    def avg_stats_trials(self, X_trials, W_stack):
+        stats = [(self.avg_stats(trial, W_stack)) for trial in X_trials]
         avg_corr = np.concatenate(tuple([np.expand_dims(stats[i][0],axis=0) for i in range(len(X_trials))]), axis=0).mean(axis=0)
-        avg_ChDist = np.array([stats[i][1] for i in range(len(X_trials))]).mean()
-        avg_TSC = np.array([stats[i][2] for i in range(len(X_trials))]).mean()
-        return avg_corr, avg_ChDist, avg_TSC
+        avg_cov = np.concatenate(tuple([np.expand_dims(stats[i][1],axis=0) for i in range(len(X_trials))]), axis=0).mean(axis=0)
+        avg_ChDist = np.array([stats[i][2] for i in range(len(X_trials))]).mean()
+        avg_TSC = np.array([stats[i][3] for i in range(len(X_trials))]).mean()
+        return avg_corr, avg_cov, avg_ChDist, avg_TSC
 
     def get_transformed_data(self, X_stack, W_stack):
         _, _, N = X_stack.shape
@@ -488,6 +494,8 @@ class GeneralizedCCA:
         n_components = self.n_components
         corr_train = np.zeros((fold, n_components))
         corr_test = np.zeros((fold, n_components))
+        cov_train = np.zeros((fold, n_components))
+        cov_test = np.zeros((fold, n_components))
         tsc_train = np.zeros((fold, 1))
         tsc_test = np.zeros((fold, 1))
         dist_train = np.zeros((fold, 1))
@@ -495,12 +503,12 @@ class GeneralizedCCA:
         for idx in range(fold):
             train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
             W_train, _, F_train, _ = self.fit(train_list[0])
-            corr_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
+            corr_train[idx,:], cov_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_stats(train_list[0], W_train)
             if self.trials:
                 test_trials = utils.into_trials(test_list[0], self.fs)
-                corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe_trials(test_trials, W_train)
+                corr_test[idx,:], cov_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_stats_trials(test_trials, W_train)
             else:
-                corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list[0], W_train)
+                corr_test[idx,:], cov_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_stats(test_list[0], W_train)
         if self.signifi_level:
             if self.pool:
                 if self.trials:
@@ -521,7 +529,7 @@ class GeneralizedCCA:
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, tsc_train, tsc_test, dist_train, dist_test, W_train, F_train
+        return corr_train, corr_test, cov_train, cov_test, tsc_train, tsc_test, dist_train, dist_test, W_train, F_train
     
 
 class CorrelatedComponentAnalysis(GeneralizedCCA):
@@ -597,6 +605,8 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
         n_components = self.n_components
         corr_train = np.zeros((fold, n_components))
         corr_test = np.zeros((fold, n_components))
+        cov_train = np.zeros((fold, n_components))
+        cov_test = np.zeros((fold, n_components))
         tsc_train = np.zeros((fold, 1))
         tsc_test = np.zeros((fold, 1))
         isc_train = np.zeros((fold, n_components))
@@ -605,12 +615,12 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
             train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
             isc_train[idx,:], W_train, _, F_train = self.fit(train_list[0])
             isc_test[idx, :], _, _, _ = self.fit(test_list[0], W_train) # Does not have a trial version
-            corr_train[idx,:], _, tsc_train[idx] = self.avg_corr_coe(train_list[0], W_train)
+            corr_train[idx,:], cov_train[idx,:], _, tsc_train[idx] = self.avg_stats(train_list[0], W_train)
             if self.trials:
                 test_trials = utils.into_trials(test_list[0], self.fs)
-                corr_test[idx,:], _, tsc_test[idx] = self.avg_corr_coe_trials(test_trials, W_train)
+                corr_test[idx,:], cov_test[idx,:], _, tsc_test[idx] = self.avg_stats_trials(test_trials, W_train)
             else:
-                corr_test[idx,:], _, tsc_test[idx] = self.avg_corr_coe(test_list[0], W_train)
+                corr_test[idx,:], cov_test[idx,:], _, tsc_test[idx] = self.avg_stats(test_list[0], W_train)
         if self.signifi_level:
             if self.pool:
                 if self.trials:
@@ -631,7 +641,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
         if self.message:
             print('Average ISC of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
             print('Average ISC of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
-        return corr_train, corr_test, tsc_train, tsc_test, isc_train, isc_test, W_train, F_train
+        return corr_train, corr_test, cov_train, cov_test, tsc_train, tsc_test, isc_train, isc_test, W_train, F_train
 
 
 class StimulusInformedGCCA:
@@ -1135,6 +1145,56 @@ class LSGCCA:
                 print('Significance level: {}'.format(sig_corr))
             else:
                 corr_trials = self.permutation_test(test_list[0][:,:,self.id_sub], test_list[1], We_train[:,self.id_sub,:], Ws_train, block_len=1)
+                corr_trials = np.sort(abs(corr_trials), axis=0)
+                sig_idx = -int(self.n_permu*self.p_value)
+                sig_corr = corr_trials[sig_idx,:]
+                print('Significance level of each component: {}'.format(sig_corr))
+        else:
+            sig_corr = None
+        if self.message:
+            print('Average correlation coefficients of the top {} components on the training sets: {}'.format(n_components, np.average(corr_train, axis=0)))
+            print('Average correlation coefficients of the top {} components on the test sets: {}'.format(n_components, np.average(corr_test, axis=0)))
+        return corr_train, corr_test, sig_corr, We_train, Ws_train, F_train
+    
+
+class LSGCCA_Group(LSGCCA):
+    def get_transformed_EEG(self, X_stack, W_stack):
+        _, _, N = X_stack.shape
+        if np.ndim (W_stack) == 2: # for correlated component analysis
+            W_stack = np.expand_dims(W_stack, axis=1)
+            W_stack = np.repeat(W_stack, N, axis=1)
+        Hankellist = [np.expand_dims(utils.block_Hankel(X_stack[:,:,n], self.L_EEG, self.offset_EEG), axis=2) for n in range(N)]
+        Hankel_center = [hankel - np.mean(hankel, axis=0, keepdims=True) for hankel in Hankellist]
+        X_center = np.concatenate(tuple(Hankel_center), axis=2)
+        X_trans = np.einsum('tdn,dkn->tkn', X_center, np.transpose(W_stack, (0,2,1)))
+        X_trans_sum = np.sum(X_trans, axis=2)
+        return X_trans_sum
+
+    def cross_val(self):
+        fold = self.fold
+        n_components = self.n_components
+        corr_train = np.zeros((fold, n_components))
+        corr_test = np.zeros((fold, n_components))
+        for idx in range(fold):
+            train_list = self.nested_train[idx]
+            test_list = self.nested_test[idx]
+            We_train = self.nested_We_train[idx]
+            S = self.nested_S[idx]
+            F_train = self.nested_F_train[idx]
+            # obtain the stimulus filters by least square regression
+            LS = LeastSquares(self.EEG_list, self.Stim_list, self.fs, decoding=False, L_Stim=self.L_Stim, offset_Stim=self.offset_Stim)
+            Ws_train, _, = LS.encoder(S, train_list[1])
+            corr_train[idx,:], _ = self.correlation(train_list[0], train_list[1], We_train, Ws_train)
+            corr_test[idx,:], _ = self.correlation(test_list[0], test_list[1], We_train, Ws_train)
+        if self.signifi_level:
+            if self.pool:
+                corr_trials = self.permutation_test(test_list[0], test_list[1], We_train, Ws_train, block_len=1)
+                corr_trials = np.sort(abs(corr_trials), axis=None)
+                sig_idx = -int(self.n_permu*self.p_value*n_components)
+                sig_corr = corr_trials[sig_idx]
+                print('Significance level: {}'.format(sig_corr))
+            else:
+                corr_trials = self.permutation_test(test_list[0], test_list[1], We_train, Ws_train, block_len=1)
                 corr_trials = np.sort(abs(corr_trials), axis=0)
                 sig_idx = -int(self.n_permu*self.p_value)
                 sig_corr = corr_trials[sig_idx,:]

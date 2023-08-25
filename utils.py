@@ -9,7 +9,7 @@ from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
 from numpy import linalg as LA
 from scipy import signal
-from scipy.linalg import toeplitz, eig, eigh, sqrtm
+from scipy.linalg import toeplitz, eig, eigh, sqrtm, lstsq
 from scipy.sparse.linalg import eigs
 from scipy.stats import zscore, pearsonr
 from numba import jit
@@ -70,6 +70,27 @@ def schmidt_orthogonalization(vectors):
     return orthogonal_vectors
 
 
+def regress_out(X, Y):
+    '''
+    Regress out Y from X
+    X: T x Dx
+    Y: T x Dy
+    '''
+    if np.ndim(Y) == 1:
+        Y = np.expand_dims(Y, axis=1)
+    if np.ndim(X) == 3:
+        X_res = copy.deepcopy(X)
+        for i in range(X.shape[2]):
+            W = lstsq(Y, X[:,:,i])[0]
+            X_res[:,:,i] = X[:,:,i] - Y @ W
+    elif np.ndim(X) == 2:
+        W = lstsq(Y, X)[0]
+        X_res = X - Y @ W
+    else:
+        raise ValueError('Check the dimension of X')
+    return X_res
+
+
 def Hankel_mtx(L_timefilter, x, offset=0):
     '''
     Calculate the Hankel matrix
@@ -120,12 +141,40 @@ def block_Hankel(X, L, offset=0):
     return blockHankel
 
 
+def hankelize_eeg_multisub(eeg_multisub, L, offset):
+    N = eeg_multisub.shape[2]
+    X_list = [block_Hankel(eeg_multisub[:,:,n], L, offset) for n in range(N)]
+    X_list = [np.expand_dims(X, axis=2) for X in X_list]
+    X = np.concatenate(tuple(X_list), axis=2)
+    return X
+
+
 def random_combination(iterable, r):
     "Random selection from itertools.combinations(iterable, r)"
     pool = tuple(iterable)
     n = len(pool)
     indices = sorted(random.sample(range(n), r))
     return [pool[i] for i in indices]
+
+
+def random_shift_2D(X, offset):
+    '''
+    Randomly shift the data X by offset
+    '''
+    assert offset != 0, 'offset should not be 0'
+    X_shifted = np.concatenate((X[offset:,:], X[:offset,:]), axis=0)
+    return X_shifted
+
+
+def random_shift_3D(X, fs):
+    '''
+    Randomly shift the data X by offset
+    '''
+    T, _, N = X.shape
+    X_shift_list = [random_shift_2D(X[:,:,n], random.randint(20*fs, T-1)) for n in range(N)]
+    X_shift_list = [np.expand_dims(X_shift_list[n], axis=2) for n in range(N)]
+    X_shifted = np.concatenate(tuple(X_shift_list), axis=2)
+    return X_shifted
 
 
 def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):
