@@ -157,24 +157,32 @@ def random_combination(iterable, r):
     return [pool[i] for i in indices]
 
 
-def random_shift_2D(X, offset):
+def get_possible_offset(offset_list, timeline, min_shift):
     '''
-    Randomly shift the data X by offset
+    Create a list of possible offsets [ofs_1, ofs_2, ...]
+    ofs_i is not in the range of [ofs_j-min_shift, ofs_j+min_shift] for any j!=i
     '''
-    assert offset != 0, 'offset should not be 0'
-    X_shifted = np.concatenate((X[offset:,:], X[:offset,:]), axis=0)
-    return X_shifted
+    T = len(timeline)
+    exclude_range = set(range(min_shift))
+    for offset in offset_list:
+        add_exclude_range = range(max(0, offset - min_shift), min(offset + min_shift, T))
+        exclude_range = set(exclude_range).union(set(add_exclude_range))
+    return list(set(range(T)) - exclude_range)
 
 
-def random_shift_3D(X, fs):
+def random_shift_3D(X, min_shift):
     '''
-    Randomly shift the data X by offset
+    Randomly shift the data of each subject
+    The offset with respect to each other must be at least min_shift
     '''
     T, _, N = X.shape
-    X_shift_list = [random_shift_2D(X[:,:,n], random.randint(20*fs, T-1)) for n in range(N)]
-    X_shift_list = [np.expand_dims(X_shift_list[n], axis=2) for n in range(N)]
-    X_shifted = np.concatenate(tuple(X_shift_list), axis=2)
-    return X_shifted
+    X_shifted = np.zeros(X.shape)
+    offset_list = []
+    for n in range(N):
+        possible_offset = get_possible_offset(offset_list, range(T), min_shift)
+        offset_list.append(random.sample(possible_offset, 1)[0])
+        X_shifted[:,:,n] = np.concatenate((X[offset_list[n]:,:,n], X[:offset_list[n],:,n]), axis=0)
+    return X_shifted, offset_list
 
 
 def transformed_GEVD(Dxx, Rxx, rho, dimStim, n_components):

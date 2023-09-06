@@ -309,7 +309,7 @@ class CanonicalCorrelationAnalysis:
 
 
 class GeneralizedCCA:
-    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4):
+    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4, save_W_perfold=False):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         fs: Sampling rate
@@ -339,6 +339,10 @@ class GeneralizedCCA:
         self.p_value = p_value
         self.trials = trials
         self.dim_subspace = dim_subspace
+        if save_W_perfold:
+            self.save_W_perfold = save_W_perfold
+            self.test_list = []
+            self.W_train_list = []
 
     def fit(self, X_stack):
         '''
@@ -503,6 +507,9 @@ class GeneralizedCCA:
         for idx in range(fold):
             train_list, test_list, _, _ = utils.split_mm_balance([self.EEG_list], fold=fold, fold_idx=idx+1)
             W_train, _, F_train, _ = self.fit(train_list[0])
+            if self.save_W_perfold:
+                self.test_list.append(test_list[0])
+                self.W_train_list.append(W_train)
             corr_train[idx,:], cov_train[idx,:], dist_train[idx], tsc_train[idx] = self.avg_stats(train_list[0], W_train)
             if self.trials:
                 test_trials = utils.into_trials(test_list[0], self.fs)
@@ -782,7 +789,7 @@ class StimulusInformedGCCA:
         offsetlist = self.offsetlist
         if self.ISC and (np.ndim(datalist[0]) != 2): # calculate avg correlation across only EEG views, unless there is only one EEG subject (CCA)
             GCCA = GeneralizedCCA(datalist[0], self.fs, Llist[0], offsetlist[0], n_components=n_components)
-            avg_corr, avg_ChDist, avg_TSC = GCCA.avg_corr_coe(datalist[0], Wlist[0])
+            avg_corr, _, avg_ChDist, avg_TSC = GCCA.avg_stats(datalist[0], Wlist[0])
         else:
             avg_corr = np.zeros(n_components)
             corr_mtx_list = []
