@@ -309,7 +309,7 @@ class CanonicalCorrelationAnalysis:
 
 
 class GeneralizedCCA:
-    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4, save_W_perfold=False):
+    def __init__(self, EEG_list, fs, L, offset, fold=10, n_components=5, regularization='lwcov', message=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4, save_W_perfold=False, crs_val=True):
         '''
         EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
         fs: Sampling rate
@@ -339,10 +339,11 @@ class GeneralizedCCA:
         self.p_value = p_value
         self.trials = trials
         self.dim_subspace = dim_subspace
-        if save_W_perfold:
-            self.save_W_perfold = save_W_perfold
+        self.save_W_perfold = save_W_perfold
+        if self.save_W_perfold:
             self.test_list = []
             self.W_train_list = []
+        self.crs_val = crs_val
 
     def fit(self, X_stack):
         '''
@@ -516,6 +517,18 @@ class GeneralizedCCA:
                 corr_test[idx,:], cov_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_stats_trials(test_trials, W_train)
             else:
                 corr_test[idx,:], cov_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_stats(test_list[0], W_train)
+            if not self.crs_val:
+                # fill the rest of the folds with the same results
+                for i in range(idx+1, fold):
+                    corr_train[i,:] = corr_train[idx,:]
+                    cov_train[i,:] = cov_train[idx,:]
+                    dist_train[i] = dist_train[idx]
+                    tsc_train[i] = tsc_train[idx]
+                    corr_test[i,:] = corr_test[idx,:]
+                    cov_test[i,:] = cov_test[idx,:]
+                    dist_test[i] = dist_test[idx]
+                    tsc_test[i] = tsc_test[idx]
+                break
         if self.signifi_level:
             if self.pool:
                 if self.trials:
@@ -628,6 +641,18 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
                 corr_test[idx,:], cov_test[idx,:], _, tsc_test[idx] = self.avg_stats_trials(test_trials, W_train)
             else:
                 corr_test[idx,:], cov_test[idx,:], _, tsc_test[idx] = self.avg_stats(test_list[0], W_train)
+            if not self.crs_val:
+                # fill the rest of the folds with the same results
+                for i in range(idx+1, fold):
+                    corr_train[i,:] = corr_train[idx,:]
+                    cov_train[i,:] = cov_train[idx,:]
+                    isc_train[i,:] = isc_train[idx,:]
+                    tsc_train[i] = tsc_train[idx]
+                    corr_test[i,:] = corr_test[idx,:]
+                    cov_test[i,:] = cov_test[idx,:]
+                    isc_test[i,:] = isc_test[idx,:]
+                    tsc_test[i] = tsc_test[idx]
+                break
         if self.signifi_level:
             if self.pool:
                 if self.trials:
@@ -652,7 +677,7 @@ class CorrelatedComponentAnalysis(GeneralizedCCA):
 
 
 class StimulusInformedGCCA:
-    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4):
+    def __init__(self, nested_datalist, fs, Llist, offsetlist, fold=10, n_components=5, regularization='lwcov', message=True, sweep_list=np.linspace(-2,2,9), ISC=True, signifi_level=True, pool=True, n_permu=1000, p_value=0.05, trials=False, dim_subspace=4, crs_val=True):
         '''
         nested_datalist: [EEG_list, Stim_list], where
             EEG_list: list of EEG data, each element is a T(#sample)xDx(#channel) array
@@ -687,6 +712,7 @@ class StimulusInformedGCCA:
         self.p_value = p_value
         self.trials = trials
         self.dim_subspace = dim_subspace
+        self.crs_val = crs_val
 
     def fit(self, datalist, rho):
         EEG, Stim = datalist
@@ -834,7 +860,7 @@ class StimulusInformedGCCA:
         return avg_corr, avg_ChDist, avg_TSC
 
     def rho_sweep(self):
-        nested_train, _, train_list, val_list  = utils.get_val_set(self.nested_datalist, self.fold, fold_val=10)
+        nested_train, _, train_list, val_list  = utils.get_val_set(self.nested_datalist, self.fold, fold_val=10, crs_val=self.crs_val)
         best = -np.inf
         for i in self.sweep_list:
             rho = 10**i
@@ -851,6 +877,7 @@ class StimulusInformedGCCA:
                 best = corr_test[0]
         # Discard the part used for validation
         nested_update = nested_train
+        print('Best rho={}, corr={}'.format(rho_best, best))
         return rho_best, nested_update
 
     def get_transformed_data(self, datalist, Wlist):
@@ -933,6 +960,16 @@ class StimulusInformedGCCA:
                 corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe_trials(test_trails, Wlist_train)
             else:
                 corr_test[idx,:], dist_test[idx], tsc_test[idx] = self.avg_corr_coe(test_list, Wlist_train)
+            if not self.crs_val:
+                # fill the rest of the folds with the same results
+                for i in range(idx+1, fold):
+                    corr_train[i,:] = corr_train[idx,:]
+                    dist_train[i] = dist_train[idx]
+                    tsc_train[i] = tsc_train[idx]
+                    corr_test[i,:] = corr_test[idx,:]
+                    dist_test[i] = dist_test[idx]
+                    tsc_test[i] = tsc_test[idx]
+                break
         if self.signifi_level:
             if self.pool:
                 if self.trials:

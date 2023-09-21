@@ -228,7 +228,7 @@ def get_val_set_single(nested_data, fold, fold_val):
     return rest_list, val_list
 
 
-def get_val_set(nested_datalist, fold, fold_val):
+def get_val_set(nested_datalist, fold, fold_val, crs_val):
     '''
     Get validation set from nested data list [[EEG_1, EEG_2, ...], [Vis_1, Vis_2, ...]]
     Return:
@@ -237,18 +237,21 @@ def get_val_set(nested_datalist, fold, fold_val):
     rest_list: [EEG_rest, Vis_rest] 
     val_list: [EEG_val, Vis_val]
     '''
-    nb_videos = len(nested_datalist[0])
-    nested_restlist = [[],[]]
-    nested_vallist = [[],[]]
-    for i in range(nb_videos):
-        nested_data = [nested_datalist[0][i], nested_datalist[1][i]]
-        rest_list, val_list = get_val_set_single(nested_data, fold, fold_val)
-        nested_restlist[0].append(rest_list[0])
-        nested_restlist[1].append(rest_list[1])
-        nested_vallist[0].append(val_list[0])
-        nested_vallist[1].append(val_list[1])
-    rest_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_restlist]
-    val_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_vallist]
+    if not crs_val:
+        rest_list, val_list, nested_restlist, nested_vallist = split_mm_balance(nested_datalist, fold_val, fold_idx=fold_val)
+    else:
+        nb_videos = len(nested_datalist[0])
+        nested_restlist = [[],[]]
+        nested_vallist = [[],[]]
+        for i in range(nb_videos):
+            nested_data = [nested_datalist[0][i], nested_datalist[1][i]]
+            rest_list, val_list = get_val_set_single(nested_data, fold, fold_val)
+            nested_restlist[0].append(rest_list[0])
+            nested_restlist[1].append(rest_list[1])
+            nested_vallist[0].append(val_list[0])
+            nested_vallist[1].append(val_list[1])
+        rest_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_restlist]
+        val_list = [np.concatenate(tuple(mod), axis=0) for mod in nested_vallist]
     return nested_restlist, nested_vallist, rest_list, val_list
 
 
