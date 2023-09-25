@@ -1,13 +1,15 @@
-# Canonical Correlation Analysis
+# Identifying Temporal Correlations Between Natural Single-shot Videos and EEG Signals
 
-This repository stores an implementation of canonical correlation analysis (CCA) in Python. Extensions of CCA will be gradually added in the future.
+This repository includes the Python code for the paper "Identifying Temporal Correlations Between Natural Single-shot Videos and EEG Signals" [1].
 
-Run the jupyter notebook to view the descriptions and experiment results. Supporting functions can be found in utils.py.
+Please run the jupyter notebooks (Shot_cuts.ipynb and One_shot.ipynb) to reproduce the results. The used algorithms are implemented in algo.py. 
+
+To do: provide the link to the dataset.
+
+```
+
 
 **Reference:**
 
-Dmochowski, Jacek P., et al. "Extracting multidimensional stimulus-response correlations using hybrid encoding-decoding of neural activity." NeuroImage 180 (2018): 134-146.
-
-Code (Matlab version): https://github.com/dmochow/SRC (The data file 'sampleData.mat' used for the experiment can also be downloaded here)
-
+[1] Yao, Y., Stebner, A., Tuytelaars, T., Geirnaert, S., & Bertrand, A. (2023). Identifying Temporal Correlations Between Natural Single-shot Videos and EEG Signals. bioRxiv. doi:10.1101/2023.09.19.558394
 
