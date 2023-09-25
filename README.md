@@ -6,8 +6,6 @@ Please run the jupyter notebooks (Shot_cuts.ipynb and One_shot.ipynb) to reprodu
 
 To do: provide the link to the dataset.
 
-```
-
 
 **Reference:**
 
