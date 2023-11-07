@@ -256,7 +256,7 @@ def get_val_set(nested_datalist, fold, fold_val, crs_val):
 
 
 def into_trials(data, fs, t=60):
-    # Divide data into t min trials
+    # Divide data into t s trials
     if np.ndim(data)==1:
         data = np.expand_dims(data, axis=1)
     T = data.shape[0]

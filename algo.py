@@ -74,8 +74,7 @@ class LeastSquares:
         else:
             W_b = lstsq(EEG_Hankel, Stim)[0]
         filtered_EEG = EEG_Hankel@W_b
-        mse = np.mean((filtered_EEG-Stim)**2)
-        return W_b, mse
+        return W_b, filtered_EEG
 
 
 class CanonicalCorrelationAnalysis:
@@ -871,13 +870,13 @@ class StimulusInformedGCCA:
                 corr_test, _, _= self.avg_corr_coe_trials(val_trails, Wlist_train)
             else:
                 corr_test, _, _ = self.avg_corr_coe(val_list, Wlist_train)
-            # print('rho={}, corr={}'.format(rho, corr_test[0]))
-            if corr_test[0] > best:
+            print('rho={}, corr={}'.format(rho, corr_test[0]))
+            if corr_test[0] >= best:
                 rho_best = rho
                 best = corr_test[0]
         # Discard the part used for validation
         nested_update = nested_train
-        print('Best rho={}, corr={}'.format(rho_best, best))
+        print('Best rho={}, val ISC={}'.format(rho_best, best))
         return rho_best, nested_update
 
     def get_transformed_data(self, datalist, Wlist):
@@ -894,11 +893,11 @@ class StimulusInformedGCCA:
                 Hankel_center = [hankel - np.mean(hankel, axis=0, keepdims=True) for hankel in Hankellist]
                 X_center = np.concatenate(tuple(Hankel_center), axis=2)
                 X_trans = np.einsum('tdn,dkn->tkn', X_center, np.transpose(W, (0,2,1)))
-            elif np.ndim(W) == 2:
+            elif np.ndim(X) == 2:
                 X_hankel = utils.block_Hankel(X, L, offset)
                 X_trans = X_hankel@W
             else:
-                raise ValueError('The dimension of W is incorrect')
+                raise ValueError('The dimension of X is incorrect')
             data_trans_list.append(X_trans)
         return data_trans_list
 
