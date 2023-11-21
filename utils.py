@@ -91,6 +91,41 @@ def regress_out(X, Y):
     return X_res
 
 
+def bandpass(data, fs, band):
+    '''
+    Bandpass filter
+    Inputs:
+        data: T x D
+        fs: sampling frequency
+        band: frequency band
+    Outputs:
+        filtered data: T x D        
+    '''
+    b, a = scipy.signal.butter(5, np.array(band), btype='bandpass', fs=fs)
+    filtered = scipy.signal.filtfilt(b, a, data, axis=0)
+    return filtered
+
+
+def extract_freq_band(eeg, fs, band):
+    '''
+    Extract frequency band from EEG data
+    Inputs:
+        eeg: EEG data
+        fs: sampling frequency
+        band: frequency band
+    Outputs:
+        eeg_band: bandpassed EEG data
+    '''
+    if eeg.ndim < 3:
+        eeg_band = bandpass(eeg, fs, band)
+    else:
+        N = eeg.shape[2]
+        eeg_band =np.zeros_like(eeg)
+        for n in range(N):
+            eeg_band[:,:,n] = bandpass(eeg[:,:,n], fs, band)
+    return eeg_band
+
+
 def Hankel_mtx(L_timefilter, x, offset=0):
     '''
     Calculate the Hankel matrix
@@ -374,9 +409,9 @@ def eval_mm(res_per_fold, component=1):
         if component is not None:
             mtx_eeg_stim = res_per_fold[idx][:,:,component-1]
         else:
-            mtx_eeg_stim = res_per_fold[idx]
-        match_stim_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=1)
-        match_eeg_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=0)
+            mtx_eeg_stim = res_per_fold[idx] # when using TSC
+        match_stim_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=1) # Given EEG, match stimulus
+        match_eeg_mtx = mtx_eeg_stim - np.expand_dims(np.diag(mtx_eeg_stim), axis=0)  # Given stimulus, match EEG
         # count the number of elements that are greater than 0
         match_stim_err += np.sum(match_stim_mtx > 0)
         match_eeg_err += np.sum(match_eeg_mtx > 0)
@@ -1267,27 +1302,33 @@ def name_paths(eeg_path_head, feature_path_head):
     return videonames, eeg_sets_paths, feature_sets_paths
 
 
-def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 5), ifISC=False):
+def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 4), ifISC=False):
     _, n_components = forward_model.shape
     biosemi_layout = mne.channels.read_layout('biosemi')
     create_info = mne.create_info(biosemi_layout.names, ch_types='eeg', sfreq=30)
     create_info.set_montage('biosemi64')
-    plt.figure(figsize=fig_size)
-    for i in range(n_components):
-        if n_components < 5:
-            n_row = 1
-            n_column = n_components
-        else:
-            n_row = n_components//5
-            n_column = 5
-        ax = plt.subplot(n_row, n_column, i + 1)
-        mne.viz.plot_topomap(np.abs(forward_model[:,i]), create_info, ch_type='eeg', axes=ax, show=False)
+    vmax = np.max(np.abs(forward_model))
+    vmin = np.min(np.abs(forward_model))
+    if n_components < 5:
+        n_row = 1
+        n_column = n_components
+    else:
+        n_row = n_components//5
+        n_column = 5
+    fig, axes = plt.subplots(nrows=n_row, ncols=n_column, figsize=fig_size)
+    fig.tight_layout()
+    fig.subplots_adjust(right=0.8)
+    comp = 0
+    for ax in axes.flat:
+        im, _ = mne.viz.plot_topomap(np.abs(forward_model[:,comp]), create_info, ch_type='eeg', axes=ax, show=False, vlim=(vmin, vmax))
         if ifISC:
-            ax.set_title("CC: {order}\n ISC: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
+            ax.set_title("CC: {order}\n ISC: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
         else:
-            ax.set_title("CC: {order}\n corr: {corr:.5f}".format(order=i+1, corr=np.mean(corr[:,i])))
-    plt.tight_layout()
-    plt.savefig(file_name, dpi=1200)
+            ax.set_title("CC: {order}\n corr: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
+        comp += 1
+    cbar_ax = fig.add_axes([0.85, 0.3, 0.02, 0.5])
+    fig.colorbar(im, cax=cbar_ax, label='Weight')
+    plt.savefig(file_name, dpi=600)
     plt.close()
 
 

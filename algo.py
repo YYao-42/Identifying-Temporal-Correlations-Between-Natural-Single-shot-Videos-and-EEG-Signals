@@ -195,11 +195,15 @@ class CanonicalCorrelationAnalysis:
         corr_coe, TSC, ChDist, p_value = self.get_corr_coe(X_trans, Y_trans)
         return corr_coe, TSC, ChDist, p_value
 
-    def cal_corr_coe_trials(self, X_trials, Y_trials, V_A, V_B):
+    def cal_corr_coe_trials(self, X_trials, Y_trials, V_A, V_B, avg=True):
         stats = [(self.cal_corr_coe(X, Y, V_A, V_B)) for X, Y in zip(X_trials, Y_trials)]
-        corr_coe = np.concatenate(tuple([np.expand_dims(stats[i][0],axis=0) for i in range(len(X_trials))]), axis=0).mean(axis=0)
-        TSC = np.array([stats[i][1] for i in range(len(X_trials))]).mean()
-        ChDist = np.array([stats[i][2] for i in range(len(X_trials))]).mean()
+        corr_coe = np.concatenate(tuple([np.expand_dims(stats[i][0],axis=0) for i in range(len(X_trials))]), axis=0)
+        TSC = np.array([stats[i][1] for i in range(len(X_trials))])
+        ChDist = np.array([stats[i][2] for i in range(len(X_trials))])
+        if avg:
+            corr_coe = np.mean(corr_coe, axis=0)
+            TSC = np.mean(TSC)
+            ChDist = np.mean(ChDist)
         return corr_coe, TSC, ChDist
 
     def permutation_test(self, X, Y, V_A, V_B, Lam, block_len):
