@@ -308,6 +308,17 @@ def into_trials(data, fs, t=60):
     return data_trials
 
 
+def shift_trials(data_trials, shift=None):
+    '''
+    Given a list of trials, move half of the trials to the end of the list
+    '''
+    nb_trials = len(data_trials)
+    if shift is None:
+        shift = nb_trials//2
+    trials_shifted = [data_trials[(n+shift)%nb_trials] for n in range(nb_trials)]
+    return trials_shifted
+
+
 def split(EEG, Sti, fold=10, fold_idx=1):
     '''
     Split datasets as one fold specified by fold_idx (test set), and the rest folds (training set). 
