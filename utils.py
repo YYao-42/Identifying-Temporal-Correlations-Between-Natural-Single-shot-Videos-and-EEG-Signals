@@ -1313,7 +1313,7 @@ def name_paths(eeg_path_head, feature_path_head):
     return videonames, eeg_sets_paths, feature_sets_paths
 
 
-def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 4), ifISC=False):
+def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 4), ifISC=False, ifeps=False):
     _, n_components = forward_model.shape
     biosemi_layout = mne.channels.read_layout('biosemi')
     create_info = mne.create_info(biosemi_layout.names, ch_types='eeg', sfreq=30)
@@ -1339,7 +1339,10 @@ def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 4), ifISC=Fa
         comp += 1
     cbar_ax = fig.add_axes([0.85, 0.3, 0.02, 0.5])
     fig.colorbar(im, cax=cbar_ax, label='Weight')
-    plt.savefig(file_name, dpi=600)
+    if ifeps:
+        plt.savefig(file_name, format='eps')
+    else:
+        plt.savefig(file_name, dpi=600)
     plt.close()
 
 
