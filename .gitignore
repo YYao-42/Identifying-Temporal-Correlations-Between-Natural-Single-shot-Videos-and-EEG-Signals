@@ -1,8 +1,7 @@
-/Matlab_CCA
-/Matlab_GCCA/
 /figures
 /tables
 /data
+/legacy
 .ipynb_checkpoints
 __pycache__/
 Draft*
