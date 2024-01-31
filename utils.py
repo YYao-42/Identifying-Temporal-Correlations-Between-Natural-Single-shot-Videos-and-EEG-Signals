@@ -1324,18 +1324,24 @@ def plot_spatial_resp(forward_model, corr, file_name, fig_size=(10, 4), ifISC=Fa
         n_row = 1
         n_column = n_components
     else:
-        n_row = n_components//5
+        if n_components % 5 != 0:
+            n_row = n_components//5 + 1
+        else:
+            n_row = n_components//5
         n_column = 5
     fig, axes = plt.subplots(nrows=n_row, ncols=n_column, figsize=fig_size)
     fig.tight_layout()
     fig.subplots_adjust(right=0.8)
     comp = 0
     for ax in axes.flat:
-        im, _ = mne.viz.plot_topomap(np.abs(forward_model[:,comp]), create_info, ch_type='eeg', axes=ax, show=False, vlim=(vmin, vmax))
-        if ifISC:
-            ax.set_title("CC: {order}\n ISC: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
+        if comp < n_components:
+            im, _ = mne.viz.plot_topomap(np.abs(forward_model[:,comp]), create_info, ch_type='eeg', axes=ax, show=False, vlim=(vmin, vmax))
+            if ifISC:
+                ax.set_title("CC: {order}\n ISC: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
+            else:
+                ax.set_title("CC: {order}\n corr: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
         else:
-            ax.set_title("CC: {order}\n corr: {corr:.3f}".format(order=comp+1, corr=np.mean(corr[:,comp])))
+            ax.axis('off')
         comp += 1
     cbar_ax = fig.add_axes([0.85, 0.3, 0.02, 0.5])
     fig.colorbar(im, cax=cbar_ax, label='Weight')
