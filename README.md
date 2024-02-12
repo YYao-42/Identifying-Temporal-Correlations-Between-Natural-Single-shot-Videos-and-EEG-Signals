@@ -7,5 +7,5 @@ This repository contains the Python code for the paper 'Identifying Temporal Cor
 
 **Reference:**
 
-[1] Yao, Y., Stebner, A., Tuytelaars, T., Geirnaert, S., & Bertrand, A. (2023). Identifying Temporal Correlations Between Natural Single-shot Videos and EEG Signals. bioRxiv. doi:10.1101/2023.09.19.558394
+[1] Yao, Y., Stebner, A., Tuytelaars, T., Geirnaert, S., & Bertrand, A. (2024). Identifying temporal correlations between natural single-shot videos and EEG signals. Journal of Neural Engineering, 21(1), 016018. doi:10.1088/1741-2552/ad2333
 
